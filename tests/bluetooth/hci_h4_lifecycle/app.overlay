@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+/ {
+	chosen { zephyr,bt-hci = &hci; };
+	test_uart: uart-emul {
+		compatible = "zephyr,uart-emul";
+		current-speed = <115200>;
+		rx-fifo-size = <64>;
+		tx-fifo-size = <4>;
+		hci: bluetooth { compatible = "zephyr,bt-hci-uart"; };
+	};
+};
+&bt_hci_userchan { status = "disabled"; };

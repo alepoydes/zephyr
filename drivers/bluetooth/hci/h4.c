@@ -521,7 +521,7 @@ static int h4_open(const struct device *dev, bt_hci_recv_t recv)
 
 	ret = bt_hci_transport_setup(cfg->uart);
 	if (ret < 0) {
-		return -EIO;
+		return ret;
 	}
 
 	h4->recv = recv;
@@ -558,24 +558,40 @@ static int h4_close(const struct device *dev)
 {
 	const struct h4_config *cfg = dev->config;
 	struct h4_data *h4 = dev->data;
+	struct net_buf *buf;
 	int err;
 
 	LOG_DBG("");
 
+	/* Stop the RX thread before disabling its UART interrupt: the thread
+	 * enables RX when it wakes, so the reverse order can leave it enabled.
+	 */
+	k_thread_abort(cfg->rx_thread);
 	uart_irq_rx_disable(cfg->uart);
 	uart_irq_tx_disable(cfg->uart);
 
 	err = bt_hci_transport_teardown(cfg->uart);
-	if (err < 0) {
-		return err;
+
+	/* A board teardown error must not leave software packets or partial
+	 * framing alive. Reopening starts at a fresh H:4 packet boundary.
+	 */
+	reset_rx(h4);
+	h4->rx.discard = 0;
+	k_sem_reset(&h4->rx.ready);
+	while ((buf = k_fifo_get(&h4->rx.fifo, K_NO_WAIT)) != NULL) {
+		net_buf_unref(buf);
 	}
-
-	/* Abort RX thread */
-	k_thread_abort(cfg->rx_thread);
-
+	if (h4->tx.buf) {
+		net_buf_unref(h4->tx.buf);
+		h4->tx.buf = NULL;
+	}
+	while ((buf = k_fifo_get(&h4->tx.fifo, K_NO_WAIT)) != NULL) {
+		net_buf_unref(buf);
+	}
+	h4->tx.type = BT_HCI_H4_NONE;
 	h4->recv = NULL;
 
-	return 0;
+	return err;
 }
 
 #if defined(CONFIG_BT_HCI_SETUP)
