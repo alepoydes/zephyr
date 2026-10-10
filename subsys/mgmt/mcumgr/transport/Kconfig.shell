@@ -37,6 +37,7 @@ config MCUMGR_TRANSPORT_SHELL_RX_BUF_COUNT
 
 config MCUMGR_TRANSPORT_SHELL_INPUT_TIMEOUT
 	bool "Shell input expiration"
+	depends on SHELL_BACKEND_SERIAL
 	help
 	  If enabled, will time out a partial or erroneous MCUmgr command received via the shell
 	  transport after a given time. This prevents the shell from becoming locked if it never

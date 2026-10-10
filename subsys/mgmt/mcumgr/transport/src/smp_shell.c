@@ -39,9 +39,11 @@ static struct smp_transport smp_shell_transport;
 
 static struct mcumgr_serial_rx_ctxt smp_shell_rx_ctxt;
 
+#ifdef CONFIG_SHELL_BACKEND_SERIAL
 static const struct shell_uart_common *shell_uart;
+#endif
 
-#ifdef CONFIG_SMP_CLIENT
+#if defined(CONFIG_SMP_CLIENT) && defined(CONFIG_SHELL_BACKEND_SERIAL)
 static struct smp_client_transport_entry smp_client_transport;
 #endif
 
@@ -70,6 +72,7 @@ static void smp_shell_input_timeout_handler(struct k_timer *timer)
 	atomic_clear_bit(&data->esc_state, ESC_MCUMGR_PKT_2);
 	atomic_clear_bit(&data->esc_state, ESC_MCUMGR_FRAG_1);
 	atomic_clear_bit(&data->esc_state, ESC_MCUMGR_FRAG_2);
+	data->overflow = false;
 
 	if (data->buf) {
 		net_buf_reset(data->buf);
@@ -147,6 +150,12 @@ size_t smp_shell_rx_bytes(struct smp_shell_data *data, const uint8_t *bytes,
 		int mcumgr_state = read_mcumgr_byte(data, byte);
 
 		if (mcumgr_state == SMP_SHELL_MCUMGR_STATE_NONE) {
+			/* Clear a prefix rejected by the second header byte. */
+			atomic_clear(&data->esc_state);
+			if (data->buf) {
+				net_buf_unref(data->buf);
+				data->buf = NULL;
+			}
 			break;
 		} else if (mcumgr_state == SMP_SHELL_MCUMGR_STATE_HEADER &&
 			   !data->buf) {
@@ -156,17 +165,26 @@ size_t smp_shell_rx_bytes(struct smp_shell_data *data, const uint8_t *bytes,
 			}
 		}
 
-		if (data->buf && net_buf_tailroom(data->buf) > 0) {
-			net_buf_add_u8(data->buf, byte);
+		if (data->buf) {
+			if (net_buf_tailroom(data->buf) > 0) {
+				net_buf_add_u8(data->buf, byte);
+			} else {
+				data->overflow = true;
+			}
 		}
 
 		/* Newline in payload means complete frame */
 		if (mcumgr_state == SMP_SHELL_MCUMGR_STATE_PAYLOAD &&
 		    byte == '\n') {
 			if (data->buf) {
-				k_fifo_put(&data->buf_ready, data->buf);
+				if (data->overflow) {
+					net_buf_unref(data->buf);
+				} else {
+					k_fifo_put(&data->buf_ready, data->buf);
+				}
 				data->buf = NULL;
 			}
+			data->overflow = false;
 			atomic_clear_bit(&data->esc_state, ESC_MCUMGR_PKT_1);
 			atomic_clear_bit(&data->esc_state, ESC_MCUMGR_PKT_2);
 			atomic_clear_bit(&data->esc_state, ESC_MCUMGR_FRAG_1);
@@ -183,27 +201,55 @@ size_t smp_shell_rx_bytes(struct smp_shell_data *data, const uint8_t *bytes,
 	return consumed;
 }
 
+struct net_buf *smp_shell_rx_packet(struct smp_shell_data *data,
+				    struct mcumgr_serial_rx_ctxt *rx_ctxt)
+{
+	struct net_buf *fragment;
+
+	while ((fragment = k_fifo_get(&data->buf_ready, K_NO_WAIT)) != NULL) {
+		struct net_buf *packet = mcumgr_serial_process_frag(rx_ctxt,
+			fragment->data, fragment->len);
+
+		net_buf_unref(fragment);
+		if (packet != NULL) {
+			return packet;
+		}
+	}
+	return NULL;
+}
+
+void smp_shell_rx_reset(struct smp_shell_data *data,
+			struct mcumgr_serial_rx_ctxt *rx_ctxt)
+{
+	struct net_buf *fragment;
+
+	while ((fragment = k_fifo_get(&data->buf_ready, K_NO_WAIT)) != NULL) {
+		net_buf_unref(fragment);
+	}
+	if (data->buf != NULL) {
+		net_buf_unref(data->buf);
+		data->buf = NULL;
+	}
+	if (rx_ctxt->nb != NULL) {
+		smp_packet_free(rx_ctxt->nb);
+		rx_ctxt->nb = NULL;
+	}
+	rx_ctxt->pkt_len = 0;
+	atomic_clear(&data->esc_state);
+	data->overflow = false;
+}
+
 void smp_shell_process(struct smp_shell_data *data)
 {
-	struct net_buf *buf;
-	struct net_buf *nb;
+	struct net_buf *packet;
 
-	while (true) {
-		buf = k_fifo_get(&data->buf_ready, K_NO_WAIT);
-		if (!buf) {
-			break;
-		}
-
-		nb = mcumgr_serial_process_frag(&smp_shell_rx_ctxt,
-						buf->data,
-						buf->len);
-		if (nb != NULL) {
-			smp_rx_req(&smp_shell_transport, nb);
-		}
-
-		net_buf_unref(buf);
+	while ((packet = smp_shell_rx_packet(data,
+					   &smp_shell_rx_ctxt)) != NULL) {
+		smp_rx_req(&smp_shell_transport, packet);
 	}
 }
+
+#ifdef CONFIG_SHELL_BACKEND_SERIAL
 
 static uint16_t smp_shell_get_mtu(const struct net_buf *nb)
 {
@@ -234,8 +280,11 @@ static int smp_shell_tx_pkt(struct net_buf *nb)
 	return rc;
 }
 
+#endif /* CONFIG_SHELL_BACKEND_SERIAL */
+
 int smp_shell_init(void)
 {
+#ifdef CONFIG_SHELL_BACKEND_SERIAL
 	int rc;
 
 	smp_shell_transport.functions.output = smp_shell_tx_pkt;
@@ -251,4 +300,7 @@ int smp_shell_init(void)
 #endif
 
 	return rc;
+#else
+	return -ENOTSUP;
+#endif
 }

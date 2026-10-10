@@ -21,6 +21,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/types.h>
+#include <zephyr/mgmt/mcumgr/transport/serial.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,7 @@ struct smp_shell_data {
 	struct k_fifo buf_ready;
 	struct net_buf *buf;
 	atomic_t esc_state;
+	bool overflow;
 };
 
 /**
@@ -50,6 +52,37 @@ struct smp_shell_data {
  */
 size_t smp_shell_rx_bytes(struct smp_shell_data *data, const uint8_t *bytes,
 			  size_t size);
+
+/**
+ * @brief Dequeue fragments and return the next complete SMP request.
+ *
+ * Custom shell backends can use the common serial framing without the default
+ * UART transport or its work queue. The caller owns the returned buffer and
+ * must free it or pass it to an SMP request processor. Initialize
+ * data->buf_pool and data->buf_ready before receiving bytes; zero-initialize
+ * rx_ctxt. Custom backends must disable
+ * CONFIG_MCUMGR_TRANSPORT_SHELL_INPUT_TIMEOUT: its timer belongs to the
+ * default UART backend.
+ *
+ * @param data SMP shell receive data.
+ * @param rx_ctxt Serial packet reassembly context owned by this backend.
+ * @return Complete request, or NULL when no complete request is queued.
+ */
+struct net_buf *smp_shell_rx_packet(struct smp_shell_data *data,
+				    struct mcumgr_serial_rx_ctxt *rx_ctxt);
+
+/**
+ * @brief Discard queued and partial input at a session boundary.
+ *
+ * Call only after stopping and joining all producers/consumers for these
+ * contexts. Requests already handed to a processor are not cancelled.
+ * It releases all receive buffers, including an incomplete multi-line packet.
+ *
+ * @param data SMP shell receive data.
+ * @param rx_ctxt Serial packet reassembly context owned by this backend.
+ */
+void smp_shell_rx_reset(struct smp_shell_data *data,
+			struct mcumgr_serial_rx_ctxt *rx_ctxt);
 
 /**
  * @brief Processes SMP data and executes command if full frame was received.

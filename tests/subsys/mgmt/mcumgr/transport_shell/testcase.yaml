@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+tests:
+  mgmt.mcumgr.transport_shell.custom:
+    platform_allow: native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64
+    extra_configs:
+      - CONFIG_SHELL_BACKEND_SERIAL=n
+    tags:
+      - mcumgr
+  mgmt.mcumgr.transport_shell.uart:
+    platform_allow: native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64
+    extra_configs:
+      - CONFIG_SHELL_BACKEND_SERIAL=y
+    tags:
+      - mcumgr
