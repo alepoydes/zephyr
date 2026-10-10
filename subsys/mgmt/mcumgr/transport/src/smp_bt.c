@@ -106,6 +106,8 @@ struct conn_param_data {
 };
 
 static uint8_t next_id;
+static struct k_spinlock conn_data_lock;
+static const struct smp_bt_request_callbacks *request_callbacks;
 static struct smp_transport smp_bt_transport;
 static struct conn_param_data conn_data[CONFIG_BT_MAX_CONN];
 
@@ -125,6 +127,7 @@ static struct smp_client_transport_entry smp_client_transport;
 /* Helper function that allocates conn_param_data for a conn. */
 static struct conn_param_data *conn_param_data_alloc(struct bt_conn *conn)
 {
+	k_spinlock_key_t key = k_spin_lock(&conn_data_lock);
 	for (size_t i = 0; i < ARRAY_SIZE(conn_data); i++) {
 		if (conn_data[i].conn == NULL) {
 			bool valid = false;
@@ -153,10 +156,12 @@ static struct conn_param_data *conn_param_data_alloc(struct bt_conn *conn)
 
 			k_sem_reset(&conn_data[i].smp_notify_sem);
 
+			k_spin_unlock(&conn_data_lock, key);
 			return &conn_data[i];
 		}
 	}
 
+	k_spin_unlock(&conn_data_lock, key);
 	/* Conn data must exists. */
 	__ASSERT_NO_MSG(false);
 	return NULL;
@@ -257,6 +262,15 @@ static ssize_t smp_bt_chr_write(struct bt_conn *conn,
 	}
 
 	started = (smp_reassembly_expected(&smp_bt_transport) >= 0);
+
+	if (started) {
+		const struct smp_bt_user_data *ud =
+			smp_reassembly_get_ud(&smp_bt_transport);
+
+		if (ud->conn != conn || ud->id != cpd->id) {
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+		}
+	}
 
 	LOG_DBG("started = %s, buf len = %d", started ? "true" : "false", len);
 	LOG_HEXDUMP_DBG(buf, len, "buf = ");
@@ -589,31 +603,36 @@ static void connected(struct bt_conn *conn, uint8_t err)
 /* BT disconnected callback. */
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
+	k_spinlock_key_t key = k_spin_lock(&conn_data_lock);
 	struct conn_param_data *cpd = conn_param_data_get(conn);
 
-	/* Remove all pending requests from this device which have yet to be processed from the
-	 * FIFO (for this specific connection).
+	if (cpd != NULL) {
+		cpd->id = 0;
+		cpd->conn = NULL;
+	}
+	k_spin_unlock(&conn_data_lock, key);
+
+#ifdef CONFIG_MCUMGR_TRANSPORT_BT_REASSEMBLY
+	struct smp_bt_user_data *ud = smp_reassembly_get_ud(&smp_bt_transport);
+
+	if (ud != NULL && ud->conn == conn) {
+		ud->conn = NULL;
+		ud->id = 0;
+		smp_reassembly_drop(&smp_bt_transport);
+	}
+#endif
+	/* Incomplete and queued packets cannot cross the session boundary.
+	 * An accepted packet is joined through its request_end callback.
 	 */
 	smp_rx_remove_invalid(&smp_bt_transport, (void *)conn);
 
-	/* Force giving the notification semaphore here, this is only needed if there is a pending
-	 * outgoing packet when the device has disconnected, as in this case the notification
-	 * callback will not be called and this is needed to prevent a deadlock.
-	 */
 	if (cpd != NULL) {
-		/* Clear cpd. */
-		cpd->id = 0;
-		cpd->conn = NULL;
-
 		if (IS_ENABLED(CONFIG_MCUMGR_TRANSPORT_BT_CONN_PARAM_CONTROL)) {
-			/* Cancel work if ongoing. */
 			(void)k_work_cancel_delayable(&cpd->dwork);
 			(void)k_work_cancel_delayable(&cpd->ework);
-
-			/* Clear cpd. */
 			cpd->state = 0;
 		}
-
+		/* No notification completion can arrive after disconnect. */
 		k_sem_give(&cpd->smp_notify_sem);
 	} else {
 		LOG_ERR("Null cpd object for connection %p", (void *)conn);
@@ -630,21 +649,58 @@ static void conn_param_control_init(void)
 
 static bool smp_bt_query_valid_check(struct net_buf *nb, void *arg)
 {
-	const struct bt_conn *conn = (struct bt_conn *)arg;
-	struct smp_bt_user_data *ud = net_buf_user_data(nb);
-	struct conn_param_data *cpd;
+	const struct smp_bt_user_data *ud = net_buf_user_data(nb);
 
-	if (conn == NULL || ud == NULL) {
-		return false;
+	/* arg is the disconnected peer. Drop all of its queued packets; another
+	 * peer's queue must not depend on the disconnected peer's slot.
+	 */
+	return ud != NULL && ud->conn != NULL && ud->conn != arg;
+}
+
+int smp_bt_register_request_callbacks(
+	const struct smp_bt_request_callbacks *callbacks)
+{
+	if (callbacks == NULL || callbacks->begin == NULL ||
+	    callbacks->end == NULL) {
+		return -EINVAL;
 	}
-
-	cpd = conn_param_data_get(conn);
-
-	if (cpd == NULL || (ud->conn == conn && cpd->id != ud->id)) {
-		return false;
+	if (request_callbacks != NULL) {
+		return -EALREADY;
 	}
+	request_callbacks = callbacks;
+	return 0;
+}
 
-	return true;
+static int smp_bt_request_begin(const struct net_buf *request, void **context)
+{
+	const struct smp_bt_user_data *ud = net_buf_user_data(request);
+	struct bt_conn *conn = ud->conn != NULL ? bt_conn_ref(ud->conn) : NULL;
+
+	if (conn == NULL) {
+		return MGMT_ERR_ENOENT;
+	}
+	k_spinlock_key_t key = k_spin_lock(&conn_data_lock);
+	struct conn_param_data *cpd = conn_param_data_get(conn);
+	bool valid = cpd != NULL && cpd->id != 0 && cpd->id == ud->id;
+
+	k_spin_unlock(&conn_data_lock, key);
+	if (!valid || (request_callbacks != NULL &&
+		       !request_callbacks->begin(conn))) {
+		bt_conn_unref(conn);
+		return MGMT_ERR_EACCESSDENIED;
+	}
+	*context = conn;
+	return MGMT_ERR_EOK;
+}
+
+static void smp_bt_request_end(void *context, int result)
+{
+	struct bt_conn *conn = context;
+
+	if (request_callbacks != NULL) {
+		request_callbacks->end(conn, result);
+	}
+	bt_conn_unref(conn);
 }
 
 static void smp_bt_setup(void)
@@ -663,6 +719,8 @@ static void smp_bt_setup(void)
 		++i;
 	}
 
+	smp_bt_transport.functions.request_begin = smp_bt_request_begin;
+	smp_bt_transport.functions.request_end = smp_bt_request_end;
 	smp_bt_transport.functions.output = smp_bt_tx_pkt;
 	smp_bt_transport.functions.get_mtu = smp_bt_get_mtu;
 	smp_bt_transport.functions.ud_copy = smp_bt_ud_copy;

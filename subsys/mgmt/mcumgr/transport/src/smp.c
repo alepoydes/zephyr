@@ -172,6 +172,10 @@ int smp_transport_init(struct smp_transport *smpt)
 	__ASSERT((smpt->functions.output != NULL),
 		 "Required transport output function pointer cannot be NULL");
 
+	if ((smpt->functions.request_begin == NULL) !=
+	    (smpt->functions.request_end == NULL)) {
+		return -EINVAL;
+	}
 	if (smpt->functions.output == NULL) {
 		return -EINVAL;
 	}

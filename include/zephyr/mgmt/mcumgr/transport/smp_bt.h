@@ -46,6 +46,33 @@ extern "C" {
 	BT_UUID_DECLARE_128(SMP_BT_CHR_UUID_VAL)
 
 /**
+ * @brief Application admission and completion for Bluetooth SMP packets.
+ *
+ * Both callbacks run on the SMP processing thread. begin may acquire a shared
+ * management/session resource and return false to discard an obsolete packet.
+ * A successful begin has exactly one matching end, after all handlers, output
+ * and packet cleanup, even if the peer disconnects. The connection reference
+ * remains valid through end. These callbacks must not block the Bluetooth RX
+ * thread waiting for packet completion; defer session release when necessary.
+ */
+struct smp_bt_request_callbacks {
+	bool (*begin)(struct bt_conn *conn);
+	void (*end)(struct bt_conn *conn, int result);
+};
+
+/**
+ * @brief Install packet callbacks before enabling Bluetooth.
+ *
+ * Register once; the structure and its callbacks must remain valid for the
+ * transport lifetime. Both callbacks are required. There is no unregister
+ * operation while packets may be in flight.
+ *
+ * @return 0 on success, -EINVAL for an invalid pair, -EALREADY if registered.
+ */
+int smp_bt_register_request_callbacks(
+	const struct smp_bt_request_callbacks *callbacks);
+
+/**
  * @brief	Registers the SMP Bluetooth service. Should only be called if the Bluetooth
  *		transport has been unregistered by calling smp_bt_unregister().
  *

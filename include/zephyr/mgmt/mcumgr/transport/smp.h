@@ -102,6 +102,37 @@ typedef bool (*smp_transport_query_valid_check_fn)(struct net_buf *nb, void *arg
 typedef void (*smp_transport_ud_req_init_fn)(struct net_buf *nb, void *priv);
 
 /**
+ * @brief Admit a packet before parsing or invoking any management handler.
+ *
+ * Use this to reject queued packets from an expired transport session or hold
+ * session resources while an accepted packet is processed. The request is only
+ * borrowed during this callback. Save any resources needed by request_end in
+ * context; the request buffer will have been consumed before request_end runs.
+ * Both callbacks run synchronously on the packet-processing thread.
+ *
+ * @param request Incoming packet, including its transport user data.
+ * @param context Opaque token returned to request_end, initialized to NULL.
+ * @return 0 to accept; a nonzero mcumgr error to drop without a reply.
+ *         On rejection, the callback retains responsibility for its resources
+ *         and request_end is not called. The SMP processor still frees request.
+ */
+typedef int (*smp_transport_request_begin_fn)(const struct net_buf *request,
+					    void **context);
+
+/**
+ * @brief Finish an accepted packet after handlers, responses and cleanup.
+ *
+ * Called exactly once after a successful request_begin, including for malformed
+ * or empty packets, allocation errors, unsupported requests and TX failures.
+ * The request buffer is no longer valid. Callback pairs must remain installed
+ * and their state alive until all processing using the transport has finished.
+ *
+ * @param context Token supplied by request_begin.
+ * @param result Packet-processing result (mcumgr error code).
+ */
+typedef void (*smp_transport_request_end_fn)(void *context, int result);
+
+/**
  * @brief Function pointers of SMP transport functions, if a handler is NULL then it is not
  * supported/implemented.
  */
@@ -123,6 +154,10 @@ struct smp_transport_api_t {
 
 	/** Transport's request buffer init function */
 	smp_transport_ud_req_init_fn ud_init;
+
+	/** Packet lifetime callbacks: supply both or neither. */
+	smp_transport_request_begin_fn request_begin;
+	smp_transport_request_end_fn request_end;
 };
 
 /**

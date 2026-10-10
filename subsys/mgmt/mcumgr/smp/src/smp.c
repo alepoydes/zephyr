@@ -384,7 +384,8 @@ static void smp_on_err(struct smp_streamer *streamer, const struct smp_hdr *req_
  *         is not enough bytes to process header, or other MGMT_ERR_[...] code on
  *         failure.
  */
-int smp_process_request_packet(struct smp_streamer *streamer, void *vreq)
+static int smp_process_packet_contents(struct smp_streamer *streamer,
+				       void *vreq)
 {
 	struct smp_hdr req_hdr = { 0 };
 	void *rsp;
@@ -493,6 +494,30 @@ int smp_process_request_packet(struct smp_streamer *streamer, void *vreq)
 	smp_free_buf(req, streamer->smpt);
 	smp_free_buf(rsp, streamer->smpt);
 
+	return rc;
+}
+
+int smp_process_request_packet(struct smp_streamer *streamer, void *request)
+{
+	const struct smp_transport_api_t *api = &streamer->smpt->functions;
+	void *context = NULL;
+	int rc;
+
+	if ((api->request_begin == NULL) != (api->request_end == NULL)) {
+		smp_free_buf(request, streamer->smpt);
+		return MGMT_ERR_EINVAL;
+	}
+	if (api->request_begin != NULL) {
+		rc = api->request_begin(request, &context);
+		if (rc != MGMT_ERR_EOK) {
+			smp_free_buf(request, streamer->smpt);
+			return rc;
+		}
+	}
+	rc = smp_process_packet_contents(streamer, request);
+	if (api->request_end != NULL) {
+		api->request_end(context, rc);
+	}
 	return rc;
 }
 
