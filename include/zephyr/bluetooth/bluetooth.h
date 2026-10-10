@@ -348,6 +348,11 @@ int bt_enable(bt_ready_cb_t cb);
  *
  * Close and release HCI resources. Result is architecture dependent.
  *
+ * A driver without a close operation returns -ENOTSUP before host teardown.
+ * If the driver's close operation fails, Bluetooth remains not ready because
+ * host state has already been torn down. This version keeps the failed disable
+ * latched; reboot the system before attempting to enable Bluetooth again.
+ *
  * @return Zero on success or (negative) error code otherwise.
  */
 int bt_disable(void);

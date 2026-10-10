@@ -185,6 +185,23 @@ static inline int bt_hci_open(const struct device *dev, bt_hci_recv_t recv)
 }
 
 /**
+ * @brief Check whether the HCI transport can be closed.
+ *
+ * Closing the transport is an optional driver operation. This tells its user
+ * up front whether bt_hci_close() can work, for example before it does
+ * something that only makes sense if the transport is closed afterwards.
+ *
+ * @param dev HCI device
+ *
+ * @retval true  The driver supports closing the transport.
+ * @retval false The driver does not support closing the transport.
+ */
+static inline bool bt_hci_can_close(const struct device *dev)
+{
+	return DEVICE_API_GET(bt_hci, dev)->close != NULL;
+}
+
+/**
  * @brief Close the HCI transport.
  *
  * Closes the HCI transport. This function must not return until the

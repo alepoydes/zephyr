@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+description: Synthetic HCI transport for disable error handling
+compatible: "zephyr,bt-hci-test"
+include: bt-hci.yaml
+properties:
+  bt-hci-bus:
+    default: "virtual"

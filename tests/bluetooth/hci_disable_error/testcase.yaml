@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+tests:
+  bluetooth.hci_disable_error.close_failure:
+    platform_allow: [native_sim/native/64]
+    integration_platforms: [native_sim/native/64]
+    tags: [bluetooth, hci]
+  bluetooth.hci_disable_error.unsupported:
+    extra_configs: [CONFIG_TEST_HCI_NO_CLOSE=y]
+    platform_allow: [native_sim/native/64]
+    integration_platforms: [native_sim/native/64]
+    tags: [bluetooth, hci]

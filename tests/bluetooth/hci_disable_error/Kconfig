@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+mainmenu "HCI disable errors"
+source "Kconfig.zephyr"
+config TEST_HCI_NO_CLOSE
+	bool "Controller without a close operation"
+	help
+	  Omit the synthetic driver close callback to exercise rejection
+	  before host teardown. Otherwise inject a driver close error.
+config TEST_HCI_SETUP
+	def_bool y
+	select BT_HCI_SETUP

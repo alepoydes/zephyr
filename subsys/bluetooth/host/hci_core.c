@@ -4732,11 +4732,11 @@ int bt_enable(bt_ready_cb_t cb)
 
 	bt_monitor_new_index(BT_MONITOR_TYPE_PRIMARY, BT_HCI_BUS, BT_ADDR_ANY, BT_HCI_NAME);
 
-	atomic_clear_bit(bt_dev.flags, BT_DEV_DISABLE);
-
 	if (atomic_test_and_set_bit(bt_dev.flags, BT_DEV_ENABLE)) {
 		return -EALREADY;
 	}
+
+	atomic_clear_bit(bt_dev.flags, BT_DEV_DISABLE);
 
 	if (IS_ENABLED(CONFIG_BT_SETTINGS)) {
 		err = bt_settings_init();
@@ -4796,6 +4796,12 @@ int bt_disable(void)
 		return -EALREADY;
 	}
 
+	/* Reject unsupported close before irreversible host teardown. */
+	if (!bt_hci_can_close(bt_dev.hci)) {
+		atomic_clear_bit(bt_dev.flags, BT_DEV_DISABLE);
+		return -ENOTSUP;
+	}
+
 	/* Clear BT_DEV_READY before disabling HCI link */
 	atomic_clear_bit(bt_dev.flags, BT_DEV_READY);
 
@@ -4836,19 +4842,13 @@ int bt_disable(void)
 	}
 
 	err = bt_hci_close(bt_dev.hci);
-	if (err == -ENOSYS) {
-		atomic_clear_bit(bt_dev.flags, BT_DEV_DISABLE);
-		atomic_set_bit(bt_dev.flags, BT_DEV_READY);
-		return -ENOTSUP;
-	}
-
 	if (err) {
 		LOG_ERR("HCI driver close failed (%d)", err);
 
-		/* Re-enable BT_DEV_READY to avoid inconsistent stack state */
-		atomic_set_bit(bt_dev.flags, BT_DEV_READY);
-
-		return err;
+		/* Restoring READY cannot undo reset and connection teardown.
+		 * Keep the failure latch; recovery requires a system reboot.
+		 */
+		return err == -ENOSYS ? -ENOTSUP : err;
 	}
 
 #if defined(CONFIG_BT_RECV_WORKQ_BT)
