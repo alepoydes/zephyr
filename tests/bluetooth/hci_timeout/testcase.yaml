@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+tests:
+  bluetooth.hci_timeout.system_queue:
+    extra_configs: [CONFIG_BT_TX_PROCESSOR_THREAD=n]
+    platform_allow: [native_sim/native/64]
+    integration_platforms: [native_sim/native/64]
+    tags: [bluetooth, hci]
+  bluetooth.hci_timeout.tx_thread:
+    extra_configs: [CONFIG_BT_TX_PROCESSOR_THREAD=y]
+    platform_allow: [native_sim/native/64]
+    integration_platforms: [native_sim/native/64]
+    tags: [bluetooth, hci]

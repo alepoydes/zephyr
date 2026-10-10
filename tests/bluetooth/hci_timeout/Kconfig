@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+source "Kconfig.zephyr"
+config TEST_HCI_SETUP
+	def_bool y
+	select BT_HCI_SETUP

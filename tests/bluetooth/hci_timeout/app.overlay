@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+/ {
+	chosen { zephyr,bt-hci = &hci_test; };
+	hci_test: hci-test {
+		compatible = "zephyr,bt-hci-test";
+		status = "okay";
+	};
+};
+
+&bt_hci_userchan { status = "disabled"; };

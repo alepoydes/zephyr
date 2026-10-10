@@ -155,6 +155,8 @@ struct cmd_data {
 };
 
 static struct cmd_data cmd_data[BT_BUF_CMD_TX_COUNT];
+/* Completion and timeout arbitrate ownership of caller-local state. */
+static struct k_spinlock cmd_sync_lock;
 
 #define cmd(buf) (&cmd_data[net_buf_id(buf)])
 #define acl(buf) ((struct bt_conn_rx *)net_buf_user_data(buf))
@@ -405,22 +407,24 @@ int bt_hci_cmd_send(uint16_t opcode, struct net_buf *buf)
 		return err;
 	}
 
-	k_fifo_put(&bt_dev.cmd_tx_queue, buf);
+	k_queue_append(&bt_dev.cmd_tx_queue, buf);
 	bt_tx_irq_raise();
 
 	return 0;
 }
 
-static bool process_pending_cmd(k_timeout_t timeout);
+static int process_pending_cmd(k_timeout_t timeout,
+			       const struct net_buf *wanted);
 int bt_hci_cmd_send_sync(uint16_t opcode, struct net_buf *buf,
 			 struct net_buf **rsp)
 {
 	struct k_sem sync_sem;
+	k_spinlock_key_t key;
 	uint8_t status;
 	int err;
 
 	if (!buf) {
-		buf = bt_hci_cmd_alloc(K_FOREVER);
+		buf = bt_hci_cmd_alloc(HCI_CMD_TIMEOUT);
 		if (!buf) {
 			return -ENOBUFS;
 		}
@@ -455,12 +459,7 @@ int bt_hci_cmd_send_sync(uint16_t opcode, struct net_buf *buf,
 	 */
 	if (!IS_ENABLED(CONFIG_BT_TX_PROCESSOR_THREAD) && k_current_get() == &k_sys_work_q.thread) {
 		/* drain the command queue until we get to send the command of interest. */
-		struct net_buf *cmd = NULL;
-
 		do {
-			cmd = k_fifo_peek_head(&bt_dev.cmd_tx_queue);
-			LOG_DBG("process cmd %p want %p", cmd, buf);
-
 			/* Wait for a response from the Bluetooth Controller.
 			 * The Controller may fail to respond if:
 			 *  - It was never programmed or connected.
@@ -471,19 +470,42 @@ int bt_hci_cmd_send_sync(uint16_t opcode, struct net_buf *buf,
 			 * to map the opcode to the HCI command documentation.
 			 * Example: 0x0c03 represents HCI_Reset command.
 			 */
-			__maybe_unused bool success = process_pending_cmd(HCI_CMD_TIMEOUT);
-
-			BT_ASSERT_MSG(success, "command opcode 0x%04x timeout", opcode);
-		} while (buf != cmd);
+			err = process_pending_cmd(HCI_CMD_TIMEOUT, buf);
+			if (err < 0) {
+				goto done_waiting;
+			}
+		} while (err == 0);
 	}
 
 	/* Now that we have sent the command, suspend until the LL replies */
 	err = k_sem_take(&sync_sem, HCI_CMD_TIMEOUT);
-	BT_ASSERT_MSG(err == 0,
-		      "Controller unresponsive, command opcode 0x%04x timeout with err %d",
-		      opcode, err);
+done_waiting:
+	key = k_spin_lock(&cmd_sync_lock);
 
+	/* A completion may win after k_sem_take() times out but before this
+	 * lock is acquired. Once sync is cleared, neither completion nor a
+	 * later controller reply may access the caller's stack again.
+	 */
+	if (cmd(buf)->sync == NULL) {
+		err = 0;
+	}
+	cmd(buf)->sync = NULL;
+	cmd(buf)->state = NULL;
 	status = cmd(buf)->status;
+	k_spin_unlock(&cmd_sync_lock, key);
+
+	if (err) {
+		/* A queued command must not execute after its caller timed out.
+		 * A sent command retains its reference for a late response.
+		 * Timeout cannot undo controller work or restore its credit.
+		 */
+		if (k_queue_remove(&bt_dev.cmd_tx_queue, buf)) {
+			net_buf_unref(buf);
+		}
+		LOG_ERR("Command opcode 0x%04x timed out", opcode);
+		net_buf_unref(buf);
+		return -ETIMEDOUT;
+	}
 	if (status) {
 		LOG_WRN("opcode 0x%04x status 0x%02x %s", opcode,
 			status, bt_hci_err_to_str(status));
@@ -2551,6 +2573,8 @@ static void hci_cmd_done(uint16_t opcode, uint8_t status, struct net_buf *evt_bu
 		net_buf_add_mem(buf, evt_buf->data, evt_buf->len);
 	}
 
+	k_spinlock_key_t key = k_spin_lock(&cmd_sync_lock);
+
 	if (cmd(buf)->state && !status) {
 		struct bt_hci_cmd_state_set *update = cmd(buf)->state;
 
@@ -2562,7 +2586,10 @@ static void hci_cmd_done(uint16_t opcode, uint8_t status, struct net_buf *evt_bu
 		LOG_DBG("sync cmd released");
 		cmd(buf)->status = status;
 		k_sem_give(cmd(buf)->sync);
+		cmd(buf)->sync = NULL;
 	}
+	cmd(buf)->state = NULL;
+	k_spin_unlock(&cmd_sync_lock, key);
 
 exit:
 	if (buf) {
@@ -3231,15 +3258,19 @@ static void hci_event(struct net_buf *buf)
 	net_buf_unref(buf);
 }
 
-static void hci_core_send_cmd(void)
+static int hci_core_send_cmd(const struct net_buf *wanted)
 {
 	struct net_buf *buf;
 	int err;
 
 	/* Get next command */
 	LOG_DBG("fetch cmd");
-	buf = k_fifo_get(&bt_dev.cmd_tx_queue, K_NO_WAIT);
-	BT_ASSERT(buf);
+	buf = k_queue_get(&bt_dev.cmd_tx_queue, K_NO_WAIT);
+	if (!buf) {
+		/* Credit arrived after the last queued command timed out. */
+		k_sem_give(&bt_dev.ncmd_sem);
+		return -EAGAIN;
+	}
 
 	/* Clear out any existing sent command */
 	if (bt_dev.sent_cmd) {
@@ -3249,6 +3280,7 @@ static void hci_core_send_cmd(void)
 	}
 
 	bt_dev.sent_cmd = net_buf_ref(buf);
+	bool matched = !wanted || buf == wanted;
 
 	LOG_DBG("Sending command 0x%04x (buf %p) to driver", cmd(buf)->opcode, buf);
 
@@ -3260,6 +3292,7 @@ static void hci_core_send_cmd(void)
 		net_buf_unref(buf);
 		bt_tx_irq_raise();
 	}
+	return matched;
 }
 
 #if defined(CONFIG_BT_CONN)
@@ -4728,7 +4761,7 @@ int bt_enable(bt_ready_cb_t cb)
 	} else {
 		k_sem_init(&bt_dev.ncmd_sem, 0, 1);
 	}
-	k_fifo_init(&bt_dev.cmd_tx_queue);
+	k_queue_init(&bt_dev.cmd_tx_queue);
 
 #if defined(CONFIG_BT_RECV_WORKQ_BT)
 	/* RX thread */
@@ -5125,17 +5158,17 @@ int bt_configure_data_path(uint8_t dir, uint8_t id, uint8_t vs_config_len,
 	return err;
 }
 
-/* Return `true` if a command was processed/sent */
-static bool process_pending_cmd(k_timeout_t timeout)
+/* Negative: nothing sent; zero: another command; one: wanted (any if NULL). */
+static int process_pending_cmd(k_timeout_t timeout,
+			       const struct net_buf *wanted)
 {
-	if (!k_fifo_is_empty(&bt_dev.cmd_tx_queue)) {
+	if (!k_queue_is_empty(&bt_dev.cmd_tx_queue)) {
 		if (k_sem_take(&bt_dev.ncmd_sem, timeout) == 0) {
-			hci_core_send_cmd();
-			return true;
+			return hci_core_send_cmd(wanted);
 		}
 	}
 
-	return false;
+	return -EAGAIN;
 }
 
 static void tx_processor(struct k_work *item)
@@ -5150,7 +5183,7 @@ static void tx_processor(struct k_work *item)
 	 */
 	k_sched_lock();
 
-	if (process_pending_cmd(K_NO_WAIT)) {
+	if (process_pending_cmd(K_NO_WAIT, NULL) >= 0) {
 		/* If we processed a command, let the scheduler run before
 		 * processing another command (or data).
 		 */

@@ -405,7 +405,7 @@ struct bt_dev {
 	sys_slist_t rx_queue;
 
 	/* Queue for outgoing HCI commands */
-	struct k_fifo		cmd_tx_queue;
+	struct k_queue		cmd_tx_queue;
 
 	const struct device *hci;
 

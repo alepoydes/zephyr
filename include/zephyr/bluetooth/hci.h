@@ -95,6 +95,12 @@ int bt_hci_cmd_send(uint16_t opcode, struct net_buf *buf);
   * was given, this parameter will be set to point to a buffer containing
   * the response parameters.
   *
+  * A missing completion returns -ETIMEDOUT. A command still queued at timeout
+  * is removed; one already sent may have taken effect. The timeout does not
+  * restore controller command credits. Buffer allocation also
+  * has a bounded wait and returns -ENOBUFS on exhaustion. This does not reset
+  * or recover an unresponsive controller.
+  *
   * @param opcode Command OpCode.
   * @param buf    Command buffer or NULL (if no parameters).
   * @param rsp    Place to store a reference to the command response. May
