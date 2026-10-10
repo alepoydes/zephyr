@@ -319,12 +319,11 @@ static int usbd_cdc_acm_request(struct usbd_class_data *const c_data,
 	}
 
 	if (bi->ep == cdc_acm_get_bulk_in(c_data)) {
-		/* TX transfer completion */
+		/* Publish completion before scheduling the UART callback. */
+		atomic_clear_bit(&data->state, CDC_ACM_TX_FIFO_BUSY);
 		if (data->cb) {
 			cdc_acm_work_submit(&data->irq_cb_work);
 		}
-
-		atomic_clear_bit(&data->state, CDC_ACM_TX_FIFO_BUSY);
 
 		if (!ring_buf_is_empty(data->tx_fifo.rb)) {
 			/* Queue pending TX data on IN endpoint */
@@ -823,6 +822,19 @@ static int cdc_acm_fifo_read(const struct device *dev,
 	return len;
 }
 
+static int cdc_acm_irq_tx_complete(const struct device *dev)
+{
+	struct cdc_acm_uart_data *const data = dev->data;
+
+	if (!check_wq_ctx(dev)) {
+		return -EWOULDBLOCK;
+	}
+
+	/* An empty FIFO may still have a data packet or ZLP in flight. */
+	return ring_buf_is_empty(data->tx_fifo.rb) && !data->zlp_needed &&
+	       !atomic_test_bit(&data->state, CDC_ACM_TX_FIFO_BUSY);
+}
+
 static int cdc_acm_irq_tx_ready(const struct device *dev)
 {
 	struct cdc_acm_uart_data *const data = dev->data;
@@ -1140,6 +1152,7 @@ static DEVICE_API(uart, cdc_acm_uart_api) = {
 	.irq_tx_enable = cdc_acm_irq_tx_enable,
 	.irq_tx_disable = cdc_acm_irq_tx_disable,
 	.irq_tx_ready = cdc_acm_irq_tx_ready,
+	.irq_tx_complete = cdc_acm_irq_tx_complete,
 	.irq_rx_enable = cdc_acm_irq_rx_enable,
 	.irq_rx_disable = cdc_acm_irq_rx_disable,
 	.irq_rx_ready = cdc_acm_irq_rx_ready,
