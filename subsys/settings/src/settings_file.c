@@ -131,11 +131,7 @@ static int settings_file_load_priv(struct settings_store *cs, line_load_cb cb,
 
 	rc = fs_open(&file, cf->cf_name, FS_O_READ);
 	if (rc != 0) {
-		if (rc == -ENOENT) {
-			return -ENOENT;
-		}
-
-		return -EINVAL;
+		return rc;
 	}
 
 	while (1) {
@@ -164,12 +160,18 @@ static int settings_file_load_priv(struct settings_store *cs, line_load_cb cb,
 		/*name, val-read_cb-ctx, val-off*/
 		/* take into account '=' separator after the name */
 		if (pass_entry) {
-			cb(name, (void *)&entry_ctx, name_len + 1, cb_arg);
+			rc = cb(name, (void *)&entry_ctx, name_len + 1, cb_arg);
+			if (rc < 0) {
+				break;
+			}
 		}
 		lines++;
 	}
 
-	rc = fs_close(&file);
+	int close_rc = fs_close(&file);
+	if (!rc) {
+		rc = close_rc;
+	}
 	cf->cf_lines = lines;
 
 	return rc;

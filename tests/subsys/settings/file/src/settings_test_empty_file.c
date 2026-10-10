@@ -48,3 +48,33 @@ ZTEST(settings_config_fs, test_config_empty_file)
 	config_wipe_srcs();
 	ctest_clear_call_state();
 }
+
+ZTEST(settings_config_fs, test_truncated_file_errors)
+{
+	struct settings_file source = {.cf_name = TEST_CONFIG_DIR "/truncated"};
+	const uint8_t partial_header = 7;
+	uint8_t value[4];
+
+	config_wipe_srcs();
+	zassert_ok(settings_file_src(&source));
+	zassert_ok(settings_file_dst(&source));
+	settings_mount_file_backend(&source);
+	int rc = fs_mkdir(TEST_CONFIG_DIR);
+
+	zassert_true(rc == 0 || rc == -EEXIST);
+	zassert_ok(fsutil_write_file(source.cf_name, &partial_header, 1));
+	zassert_equal(settings_load_one("missing", value, sizeof(value)), -ESPIPE);
+	zassert_ok(fs_unlink(source.cf_name));
+	zassert_ok(settings_save_one("value", "1234", 4));
+	struct fs_dirent entry;
+	struct fs_file_t file;
+
+	zassert_ok(fs_stat(source.cf_name, &entry));
+	fs_file_t_init(&file);
+	zassert_ok(fs_open(&file, source.cf_name, FS_O_WRITE));
+	zassert_ok(fs_truncate(&file, entry.size - 2));
+	zassert_ok(fs_close(&file));
+	zassert_equal(settings_load_one("value", value, sizeof(value)), -ESPIPE);
+	config_wipe_srcs();
+	ctest_clear_call_state();
+}

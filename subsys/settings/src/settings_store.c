@@ -104,7 +104,12 @@ static int settings_set_default_cb(const char *name, size_t len, settings_read_c
 
 	name_len = settings_name_next(name, &next);
 	if (name_len == 0) {
-		rc = read_cb(cb_arg, dest->buf, MIN(dest->buf_len, len));
+		size_t expected = MIN(dest->buf_len, len);
+
+		rc = read_cb(cb_arg, dest->buf, expected);
+		if (rc >= 0 && rc != expected) {
+			rc = -ESPIPE;
+		}
 		*dest->val_len = len;
 	}
 
