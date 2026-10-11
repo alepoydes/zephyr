@@ -5970,6 +5970,13 @@ function(add_llext_target target_name)
 
   # Compile the source file using current Zephyr settings but a different
   # set of flags to obtain the desired llext object type.
+  # Keep architecture/multilib selection when the compiler drives the linker.
+  set(llext_link_flags ${TOOLCHAIN_LD_FLAGS})
+  foreach(flag_group IN LISTS TOOLCHAIN_GROUPED_LD_FLAGS)
+    list(JOIN ${flag_group} " " grouped_flags)
+    list(APPEND llext_link_flags "SHELL:${grouped_flags}")
+  endforeach()
+
   set(llext_lib_target ${target_name}_llext_lib)
   if(CONFIG_LLEXT_TYPE_ELF_OBJECT)
 
@@ -5996,6 +6003,7 @@ function(add_llext_target target_name)
 
     # Add the llext flags to the linking step as well
     target_link_options(${llext_lib_target} PRIVATE
+      ${llext_link_flags}
       ${LLEXT_APPEND_FLAGS}
     )
 
@@ -6010,6 +6018,7 @@ function(add_llext_target target_name)
 
     # Add the llext flags to the linking step as well
     target_link_options(${llext_lib_target} PRIVATE
+      ${llext_link_flags}
       ${LLEXT_APPEND_FLAGS}
     )
 
@@ -6054,7 +6063,7 @@ function(add_llext_target target_name)
   add_custom_command(
     OUTPUT ${llext_pkg_input}
     COMMAND "$<IF:${has_post_build_cmds},${noop_cmd},${copy_cmd}>"
-    DEPENDS ${llext_proc_target}
+    DEPENDS ${llext_proc_target} ${llext_lib_output}
     COMMAND_EXPAND_LISTS
   )
 
