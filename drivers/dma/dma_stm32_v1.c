@@ -329,7 +329,9 @@ int stm32_dma_disable_stream(DMA_TypeDef *dma, uint32_t id)
 {
 	LL_DMA_DisableStream(dma, dma_stm32_id_to_stream(id));
 
-	while (stm32_dma_is_enabled_stream(dma, id)) {
+	/* The common driver owns the timeout and interrupt-context policy. */
+	if (stm32_dma_is_enabled_stream(dma, id)) {
+		return -EAGAIN;
 	}
 
 	dma_stm32_clear_tc(dma, id);

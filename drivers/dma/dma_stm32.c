@@ -263,20 +263,18 @@ static int dma_stm32_get_periph_increment(enum dma_addr_adj increment,
 
 static int dma_stm32_disable_stream(DMA_TypeDef *dma, uint32_t id)
 {
-	int count = 0;
+	int64_t deadline = k_uptime_get() + 5000;
 
 	for (;;) {
 		if (stm32_dma_disable_stream(dma, id) == 0) {
 			return 0;
 		}
-		/* After trying for 5 seconds, give up */
-		if (count++ > (5 * 1000)) {
+		/* A stop from an ISR cannot sleep; its caller may retry later. */
+		if (k_is_in_isr() || k_uptime_get() >= deadline) {
 			return -EBUSY;
 		}
 		k_sleep(K_MSEC(1));
 	}
-
-	return 0;
 }
 
 DMA_STM32_EXPORT_API int dma_stm32_configure(const struct device *dev,
@@ -638,6 +636,7 @@ DMA_STM32_EXPORT_API int dma_stm32_stop(const struct device *dev, uint32_t id)
 
 	/* Repeated stop : return now if channel is already stopped */
 	if (!stm32_dma_is_enabled_stream(dma, id)) {
+		stream->busy = false;
 		return 0;
 	}
 
@@ -651,7 +650,11 @@ DMA_STM32_EXPORT_API int dma_stm32_stop(const struct device *dev, uint32_t id)
 #endif
 
 	dma_stm32_clear_stream_irq(dev, id);
-	dma_stm32_disable_stream(dma, id);
+	int err = dma_stm32_disable_stream(dma, id);
+
+	if (err != 0) {
+		return err;
+	}
 
 	/* Finally, flag stream as free */
 	stream->busy = false;
