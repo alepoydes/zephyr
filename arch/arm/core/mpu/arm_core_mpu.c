@@ -337,6 +337,12 @@ void z_arm_configure_dynamic_mpu_regions(struct k_thread *thread)
 	region_num++;
 #endif /* CONFIG_MPU_STACK_GUARD */
 
+	/* PendSV may call this with interrupts enabled. An ISR must not access
+	 * memory or select an MPU region while its base and attributes are being
+	 * reprogrammed: an old read-only size can cover unrelated kernel data.
+	 */
+	unsigned int key = arch_irq_lock();
+
 	/* Configure the dynamic MPU regions */
 #ifdef CONFIG_AARCH32_ARMV8_R
 	arm_core_mpu_disable();
@@ -346,6 +352,7 @@ void z_arm_configure_dynamic_mpu_regions(struct k_thread *thread)
 #ifdef CONFIG_AARCH32_ARMV8_R
 	arm_core_mpu_enable();
 #endif
+	arch_irq_unlock(key);
 }
 
 #if defined(CONFIG_USERSPACE)
