@@ -648,6 +648,44 @@ ZTEST_USER(userspace, test_access_after_revoke)
 	zassert_unreachable("Using revoked object did not fault");
 }
 
+static K_SEM_DEFINE(thread_cleanup_sem, 0, 2);
+static struct k_thread surviving_thread;
+static K_THREAD_STACK_DEFINE(surviving_stack, STACKSIZE);
+
+static void give_cleanup_sem(void *p1, void *p2, void *p3)
+{
+	k_sem_give(&thread_cleanup_sem);
+}
+
+ZTEST(userspace, test_thread_exit_revokes_only_its_permissions)
+{
+	clear_fault();
+	k_sem_reset(&thread_cleanup_sem);
+	k_thread_create(&test_thread, test_stack, STACKSIZE, give_cleanup_sem,
+			NULL, NULL, NULL, 1, K_USER, K_FOREVER);
+	k_thread_create(&surviving_thread, surviving_stack, STACKSIZE, give_cleanup_sem,
+			NULL, NULL, NULL, 1, K_USER, K_FOREVER);
+	k_object_access_grant(&thread_cleanup_sem, &test_thread);
+	k_object_access_grant(&thread_cleanup_sem, &surviving_thread);
+
+	k_thread_start(&test_thread);
+	zassert_ok(k_thread_join(&test_thread, K_SECONDS(1)));
+	zassert_equal(k_sem_count_get(&thread_cleanup_sem), 1);
+	k_thread_start(&surviving_thread);
+	zassert_ok(k_thread_join(&surviving_thread, K_SECONDS(1)));
+	zassert_equal(k_sem_count_get(&thread_cleanup_sem), 2);
+
+	/* Reusing the thread object must not restore the departed owner's grant. */
+	k_sem_reset(&thread_cleanup_sem);
+	k_thread_create(&test_thread, test_stack, STACKSIZE, give_cleanup_sem,
+			NULL, NULL, NULL, 1, K_USER, K_FOREVER);
+	set_fault(K_ERR_KERNEL_OOPS);
+	k_thread_start(&test_thread);
+	zassert_ok(k_thread_join(&test_thread, K_SECONDS(1)));
+	zassert_false(expect_fault, "Reused thread retained permission");
+	zassert_equal(k_sem_count_get(&thread_cleanup_sem), 0);
+}
+
 static void umode_enter_func(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
