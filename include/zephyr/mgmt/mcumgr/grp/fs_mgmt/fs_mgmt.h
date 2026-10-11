@@ -98,6 +98,18 @@ enum fs_mgmt_err_code_t {
 	FS_MGMT_ERR_FILE_CLOSE_FAILED,
 };
 
+/**
+ * @brief Close the current file transfer and cancel its idle timeout.
+ *
+ * Thread context only. Do not call from a filesystem management callback, where
+ * the transfer lock is already held. A later request may open another transfer;
+ * callers must serialize operations that rely on the file remaining closed.
+ *
+ * @return 0 on success (including no open file), -EBUSY if the transfer lock
+ * could not be acquired, or the negative errno returned by fs_close().
+ */
+int fs_mgmt_file_close(void);
+
 #ifdef __cplusplus
 }
 #endif

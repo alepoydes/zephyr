@@ -132,7 +132,21 @@ static int fs_mgmt_cleanup(void)
 		fs_mgmt_ctxt.transport = NULL;
 	}
 
-	return rc < 0 ? FS_MGMT_ERR_FILE_CLOSE_FAILED : FS_MGMT_ERR_OK;
+	return rc;
+}
+
+int fs_mgmt_file_close(void)
+{
+	int rc = k_sem_take(&fs_mgmt_ctxt.lock_sem, FILE_SEMAPHORE_MAX_TAKE_TIME);
+
+	if (rc != 0) {
+		return -EBUSY;
+	}
+
+	k_work_cancel_delayable(&fs_mgmt_ctxt.file_close_work);
+	rc = fs_mgmt_cleanup();
+	k_sem_give(&fs_mgmt_ctxt.lock_sem);
+	return rc;
 }
 
 static void file_close_work_handler(struct k_work *work)
@@ -234,7 +248,7 @@ static int fs_mgmt_upload_download_finish_check(void)
 		k_work_reschedule(&fs_mgmt_ctxt.file_close_work, FILE_CLOSE_IDLE_TIME);
 	}
 
-	return rc;
+	return rc < 0 ? FS_MGMT_ERR_FILE_CLOSE_FAILED : FS_MGMT_ERR_OK;
 }
 
 /**
@@ -956,22 +970,16 @@ fs_mgmt_supported_hash_checksum(struct smp_streamer *ctxt)
  */
 static int fs_mgmt_close_opened_file(struct smp_streamer *ctxt)
 {
-	zcbor_state_t *zse = ctxt->writer->zs;
-	bool ok = true;
-	int rc;
+	int rc = fs_mgmt_file_close();
 
-	if (k_sem_take(&fs_mgmt_ctxt.lock_sem, FILE_SEMAPHORE_MAX_TAKE_TIME)) {
+	if (rc == -EBUSY) {
 		return MGMT_ERR_EBUSY;
 	}
-
-	rc = fs_mgmt_cleanup();
-	if (rc != FS_MGMT_ERR_OK) {
-		ok = smp_add_cmd_err(zse, MGMT_GROUP_ID_FS, rc);
+	if (rc < 0 && !smp_add_cmd_err(ctxt->writer->zs, MGMT_GROUP_ID_FS,
+				     FS_MGMT_ERR_FILE_CLOSE_FAILED)) {
+		return MGMT_ERR_EMSGSIZE;
 	}
-
-	k_sem_give(&fs_mgmt_ctxt.lock_sem);
-
-	return rc == FS_MGMT_ERR_OK ? MGMT_ERR_EOK : MGMT_ERR_EMSGSIZE;
+	return MGMT_ERR_EOK;
 }
 
 #ifdef CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL

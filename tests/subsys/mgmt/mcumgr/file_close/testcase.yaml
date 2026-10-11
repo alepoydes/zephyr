@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+tests:
+  mgmt.mcumgr.file_close:
+    platform_allow:
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64
+    tags:
+      - mcumgr
+      - filesystem
