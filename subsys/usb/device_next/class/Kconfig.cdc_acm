@@ -22,6 +22,15 @@ config USBD_CDC_ACM_WORKQUEUE
 	  Use the dedicated queue in CDC ACM implementation if the systemwork
 	  queue cannot be used due to performance issues or other conflicts.
 
+config USBD_CDC_ACM_WORKQUEUE_PRIORITY
+	int "USB CDC ACM workqueue priority"
+	depends on USBD_CDC_ACM_WORKQUEUE
+	default SYSTEM_WORKQUEUE_PRIORITY
+	help
+	  Priority of the dedicated CDC ACM workqueue. A preemptible priority
+	  allows time-sensitive application threads to interrupt USB processing
+	  even when another subsystem requires a cooperative system workqueue.
+
 config USBD_CDC_ACM_STACK_SIZE
 	int "USB CDC ACM workqueue stack size"
 	depends on USBD_CDC_ACM_WORKQUEUE
