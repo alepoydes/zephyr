@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+common:
+  tags: [adc, drivers]
+  depends_on: adc
+  filter: CONFIG_ADC_STM32
+  platform_allow: [nucleo_f401re]
+tests:
+  drivers.adc.stm32_timeout:
+    integration_platforms: [nucleo_f401re]

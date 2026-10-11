@@ -248,6 +248,12 @@ struct adc_stm32_data {
 	uint32_t channels;
 	uint8_t channel_count;
 	uint8_t samples_count;
+#if CONFIG_ADC_STM32_CONVERSION_TIMEOUT_MS > 0
+	struct k_timer conversion_timeout;
+	bool conversion_active;
+	bool read_active;
+	int64_t conversion_deadline_ms;
+#endif
 	int8_t acq_time_index[2];
 
 #ifdef CONFIG_ADC_STM32_INJECTED_CHANNELS
@@ -1282,6 +1288,9 @@ static int start_read(const struct device *dev,
 	adc_context_start_sampling(&data->ctx);
 #else /* CONFIG_ADC_STREAM */
 	/* This call will start the DMA */
+#if CONFIG_ADC_STM32_CONVERSION_TIMEOUT_MS > 0
+	data->read_active = true;
+#endif
 	adc_context_start_read(&data->ctx, sequence);
 #endif /* CONFIG_ADC_STREAM */
 
@@ -1294,6 +1303,45 @@ static int start_read(const struct device *dev,
 
 	return result;
 }
+
+#if CONFIG_ADC_STM32_CONVERSION_TIMEOUT_MS > 0
+/* F4 regular, interrupt-driven conversion only; callers hold the IRQ lock.
+ * Clearing ADON stops conversion (RM0430 13.3.1). There is no DMA writer.
+ */
+static void adc_stm32_abort_sampling(const struct device *dev, int error)
+{
+	struct adc_stm32_data *data = dev->data;
+	const struct adc_stm32_cfg *config = dev->config;
+	ADC_TypeDef *adc = config->base;
+
+	data->conversion_active = false;
+	data->read_active = false;
+	k_timer_stop(&data->conversion_timeout);
+	adc_context_disable_timer(&data->ctx);
+	LL_ADC_DisableIT_EOCS(adc);
+	LL_ADC_Disable(adc);
+	stm32_reg_write(&adc->SR, ~(LL_ADC_FLAG_EOCS | LL_ADC_FLAG_OVR | LL_ADC_FLAG_STRT));
+	data->buffer = NULL;
+	data->samples_count = 0;
+	adc_context_complete(&data->ctx, error);
+	pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+	if (IS_ENABLED(CONFIG_PM_S2RAM)) {
+		pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+	}
+}
+
+static void adc_stm32_conversion_timeout(struct k_timer *timer)
+{
+	struct adc_stm32_data *data =
+		CONTAINER_OF(timer, struct adc_stm32_data, conversion_timeout);
+	unsigned int key = irq_lock();
+
+	if (data->conversion_active && k_uptime_get() >= data->conversion_deadline_ms) {
+		adc_stm32_abort_sampling(data->dev, -ETIMEDOUT);
+	}
+	irq_unlock(key);
+}
+#endif
 
 static void adc_context_start_sampling(struct adc_context *ctx)
 {
@@ -1323,7 +1371,24 @@ static void adc_context_start_sampling(struct adc_context *ctx)
 #endif
 	adc_stm32_dma_start(dev, data->buffer, data->channel_count);
 #endif
+#if CONFIG_ADC_STM32_CONVERSION_TIMEOUT_MS > 0
+	unsigned int key = irq_lock();
+
+	/* A sequence timer already dispatched when a higher-priority ADC IRQ
+	 * cancelled the read must not restart conversion into the old buffer. */
+	if (!data->read_active) {
+		irq_unlock(key);
+		return;
+	}
+	data->conversion_active = true;
+	data->conversion_deadline_ms = k_uptime_get() + CONFIG_ADC_STM32_CONVERSION_TIMEOUT_MS;
+	k_timer_start(&data->conversion_timeout,
+		      K_MSEC(CONFIG_ADC_STM32_CONVERSION_TIMEOUT_MS), K_NO_WAIT);
+#endif
 	adc_stm32_start_conversion(dev);
+#if CONFIG_ADC_STM32_CONVERSION_TIMEOUT_MS > 0
+	irq_unlock(key);
+#endif
 }
 
 static void adc_context_update_buffer_pointer(struct adc_context *ctx,
@@ -1343,6 +1408,23 @@ static void adc_stm32_isr(const struct device *dev)
 	struct adc_stm32_data *data = dev->data;
 	const struct adc_stm32_cfg *config = (const struct adc_stm32_cfg *)dev->config;
 	ADC_TypeDef *adc = config->base;
+
+#if CONFIG_ADC_STM32_CONVERSION_TIMEOUT_MS > 0
+	unsigned int key = irq_lock();
+
+	/* A shared or pending IRQ after cancellation must not touch old data. */
+	if (!data->conversion_active) {
+		LL_ADC_ClearFlag_EOCS(adc);
+		LL_ADC_ClearFlag_OVR(adc);
+		irq_unlock(key);
+		return;
+	}
+	if (LL_ADC_IsActiveFlag_OVR(adc)) {
+		adc_stm32_abort_sampling(dev, -EIO);
+		irq_unlock(key);
+		return;
+	}
+#endif
 
 #if !DT_HAS_COMPAT_STATUS_OKAY(st_stm32f1_adc)
 	if (LL_ADC_IsActiveFlag_OVR(adc)) {
@@ -1382,6 +1464,10 @@ static void adc_stm32_isr(const struct device *dev)
 		/* ISR is triggered after each conversion, and at the end-of-sequence. */
 		if (++data->samples_count == data->channel_count) {
 			data->samples_count = 0;
+#if CONFIG_ADC_STM32_CONVERSION_TIMEOUT_MS > 0
+			data->conversion_active = false;
+			k_timer_stop(&data->conversion_timeout);
+#endif
 			adc_context_on_sampling_done(&data->ctx, dev);
 			pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE,
 						 PM_ALL_SUBSTATES);
@@ -1424,6 +1510,9 @@ static void adc_stm32_isr(const struct device *dev)
 #endif /* CONFIG_ADC_STREAM */
 	}
 
+#if CONFIG_ADC_STM32_CONVERSION_TIMEOUT_MS > 0
+	irq_unlock(key);
+#endif
 	LOG_DBG("%s ISR triggered.", dev->name);
 }
 #endif /* !CONFIG_ADC_STM32_DMA */
@@ -1437,6 +1526,9 @@ static void adc_context_on_complete(struct adc_context *ctx, int status)
 
 	ARG_UNUSED(status);
 
+#if CONFIG_ADC_STM32_CONVERSION_TIMEOUT_MS > 0
+	data->read_active = false;
+#endif
 #ifndef CONFIG_ADC_STM32_INJECTED_CHANNELS
 	/* Reset acquisition time used for the sequence */
 	data->acq_time_index[0] = -1;
@@ -2003,6 +2095,9 @@ static int adc_stm32_init(const struct device *dev)
 	 */
 	adc_stm32_disable(adc, true);
 
+#if CONFIG_ADC_STM32_CONVERSION_TIMEOUT_MS > 0
+	k_timer_init(&data->conversion_timeout, adc_stm32_conversion_timeout, NULL);
+#endif
 	adc_context_unlock_unconditionally(&data->ctx);
 
 #ifdef CONFIG_ADC_STM32_INJECTED_CHANNELS

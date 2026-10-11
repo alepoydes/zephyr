@@ -38,6 +38,20 @@ config ADC_STM32_DMA
 	  Enable the ADC DMA mode for ADC instances
 	  that enable dma channels in their device tree node.
 
+config ADC_STM32_CONVERSION_TIMEOUT_MS
+	int "STM32 F4 interrupt-driven conversion timeout (ms)"
+	depends on ADC_STM32 && DT_HAS_ST_STM32F4_ADC_ENABLED
+	depends on !ADC_STM32_DMA && !ADC_STM32_INJECTED_CHANNELS && !ADC_STREAM
+	range 0 1000
+	default 0
+	help
+	  Bound each regular sampling, from its software trigger to receipt of
+	  all channel results. Zero disables the timeout. This does not limit
+	  deliberate intervals between samplings in a sequence. With a timeout
+	  enabled, timeout and overrun stop the ADC before completing the read
+	  with an error, so neither late interrupts nor callbacks can retain
+	  the caller's buffer. Both synchronous and asynchronous reads apply.
+
 config ADC_STM32_INJECTED_CHANNELS
 	def_bool y
 	depends on ADC_SEQUENCE_PRIORITY
