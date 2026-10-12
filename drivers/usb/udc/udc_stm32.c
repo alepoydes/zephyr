@@ -24,6 +24,9 @@
 
 #include "udc_common.h"
 #include <stm32_usb_common.h>
+#ifdef CONFIG_UDC_STM32_BC12
+#include "udc_stm32_bc12.h"
+#endif
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(udc_stm32, CONFIG_UDC_DRIVER_LOG_LEVEL);
@@ -128,6 +131,7 @@ enum udc_stm32_msg_type {
 	UDC_STM32_MSG_SETUP,
 	UDC_STM32_MSG_DATA_OUT,
 	UDC_STM32_MSG_DATA_IN,
+	UDC_STM32_MSG_BC12,
 };
 
 struct udc_stm32_msg {
@@ -145,6 +149,16 @@ struct udc_stm32_data  {
 	struct k_thread thread_data;
 	struct k_msgq msgq_data;
 	char msgq_buf[CONFIG_UDC_STM32_MAX_QMESSAGES * sizeof(struct udc_stm32_msg)];
+#ifdef CONFIG_UDC_STM32_BC12
+	struct stm32_bc12_detection detection;
+	struct k_mutex bc12_callback_lock;
+	const struct device *bc12_dev;
+	bc12_callback_t bc12_callback;
+	void *bc12_user_data;
+	bool bc12_notify;
+	bool bc12_phy_enabled;
+	bool bc12_phy_uncertain;
+#endif
 };
 
 struct udc_stm32_config {
@@ -609,6 +623,175 @@ void HAL_PCD_SetupStageCallback(PCD_HandleTypeDef *hpcd)
 	}
 }
 
+#ifdef CONFIG_UDC_STM32_BC12
+#define STM32_BC12_ENABLE_MASK (USB_OTG_GCCFG_BCDEN | USB_OTG_GCCFG_DCDEN | \
+                               USB_OTG_GCCFG_PDEN | USB_OTG_GCCFG_SDEN)
+
+static bool stm32_bc12_active(const struct udc_stm32_data *priv)
+{
+	return priv->detection.phase != STM32_BC12_IDLE &&
+	       priv->detection.phase != STM32_BC12_COMPLETE;
+}
+
+static void stm32_bc12_restore(struct udc_stm32_data *priv)
+{
+	/* Detection uses the USB PHY while the UDC is detached. Restore its
+	 * original power state: HAL_PCD_Start does not always power it back up. */
+	MODIFY_REG(priv->pcd.Instance->GCCFG,
+		   STM32_BC12_ENABLE_MASK | USB_OTG_GCCFG_PWRDWN,
+		   priv->bc12_phy_enabled ? USB_OTG_GCCFG_PWRDWN : 0);
+}
+
+static void stm32_bc12_wake(struct udc_stm32_data *priv)
+{
+	struct udc_stm32_msg msg = {.type = UDC_STM32_MSG_BC12};
+
+	/* A full queue already wakes the same thread, which checks detection
+	 * between messages. No separate queue or blocked system worker is needed. */
+	(void)k_msgq_put(&priv->msgq_data, &msg, K_NO_WAIT);
+}
+
+static void stm32_bc12_cancel(struct udc_stm32_data *priv)
+{
+	if (stm32_bc12_active(priv)) {
+		stm32_bc12_restore(priv);
+	}
+	priv->detection = (struct stm32_bc12_detection) {0};
+	priv->bc12_notify = true;
+	stm32_bc12_wake(priv);
+}
+
+static int stm32_bc12_set_role(const struct device *dev, enum bc12_role role)
+{
+	const struct device *parent = dev->config;
+	struct udc_stm32_data *priv = udc_get_private(parent);
+	const struct udc_stm32_config *cfg = parent->config;
+	int err = 0;
+
+	if (role != BC12_PORTABLE_DEVICE && role != BC12_DISCONNECTED) {
+		return -ENOTSUP;
+	}
+	k_mutex_lock(&priv->bc12_callback_lock, K_FOREVER);
+	udc_lock_internal(parent, K_FOREVER);
+	if (role == BC12_DISCONNECTED) {
+		stm32_bc12_cancel(priv);
+	} else if (!udc_is_initialized(parent)) {
+		err = -EHOSTDOWN;
+	} else if (udc_is_enabled(parent)) {
+		err = -EBUSY;
+	} else if (priv->bc12_phy_uncertain) {
+		err = -EIO;
+	} else if (cfg->selected_phy != PCD_PHY_EMBEDDED) {
+		err = -ENOTSUP;
+	} else if (priv->detection.phase == STM32_BC12_IDLE) {
+		priv->bc12_phy_enabled = (priv->pcd.Instance->GCCFG & USB_OTG_GCCFG_PWRDWN) != 0;
+		MODIFY_REG(priv->pcd.Instance->GCCFG,
+			   STM32_BC12_ENABLE_MASK | USB_OTG_GCCFG_PWRDWN,
+			   USB_OTG_GCCFG_BCDEN | USB_OTG_GCCFG_DCDEN);
+		stm32_bc12_start(&priv->detection, k_uptime_get());
+		priv->bc12_notify = false;
+		stm32_bc12_wake(priv);
+	}
+	udc_unlock_internal(parent);
+	k_mutex_unlock(&priv->bc12_callback_lock);
+	return err;
+}
+
+static int stm32_bc12_set_callback(const struct device *dev, bc12_callback_t callback,
+				   void *user_data)
+{
+	const struct device *parent = dev->config;
+	struct udc_stm32_data *priv = udc_get_private(parent);
+
+	k_mutex_lock(&priv->bc12_callback_lock, K_FOREVER);
+	udc_lock_internal(parent, K_FOREVER);
+	priv->bc12_callback = callback;
+	priv->bc12_user_data = user_data;
+	priv->bc12_notify = !stm32_bc12_active(priv);
+	stm32_bc12_wake(priv);
+	udc_unlock_internal(parent);
+	k_mutex_unlock(&priv->bc12_callback_lock);
+	return 0;
+}
+
+static k_timeout_t stm32_bc12_poll(const struct device *dev)
+{
+	struct udc_stm32_data *priv = udc_get_private(dev);
+	int delay = -1;
+
+	/* Role/callback changes wait for an in-flight notification. Keep this
+	 * separate from the UDC lock: the callback may enable USB or select a
+	 * new role, without reversing the USB context -> UDC lock order. */
+	k_mutex_lock(&priv->bc12_callback_lock, K_FOREVER);
+	udc_lock_internal(dev, K_FOREVER);
+	if (stm32_bc12_active(priv)) {
+		enum stm32_bc12_phase before = priv->detection.phase;
+		uint32_t status = priv->pcd.Instance->GCCFG;
+		bool detected = before == STM32_BC12_CONTACT ? status & USB_OTG_GCCFG_DCDET :
+			before == STM32_BC12_PRIMARY ? status & USB_OTG_GCCFG_PDET :
+			status & USB_OTG_GCCFG_SDET;
+
+		delay = stm32_bc12_step(&priv->detection, detected, k_uptime_get());
+		if (priv->detection.phase == STM32_BC12_COMPLETE) {
+			stm32_bc12_restore(priv);
+			priv->bc12_notify = true;
+		} else if (priv->detection.phase != before) {
+			uint32_t selected = priv->detection.phase == STM32_BC12_PRIMARY ?
+				USB_OTG_GCCFG_PDEN : priv->detection.phase == STM32_BC12_SECONDARY ?
+				USB_OTG_GCCFG_SDEN : USB_OTG_GCCFG_DCDEN;
+
+			MODIFY_REG(priv->pcd.Instance->GCCFG, STM32_BC12_ENABLE_MASK,
+				   USB_OTG_GCCFG_BCDEN | selected);
+		}
+	}
+	bool disconnected = priv->detection.phase == STM32_BC12_IDLE;
+	struct bc12_partner_state result = {
+		.bc12_role = BC12_PORTABLE_DEVICE,
+		.type = priv->detection.type,
+		.voltage_uv = BC12_CHARGER_VOLTAGE_UV,
+		/* SDP still requires USB configuration to authorize the host budget. */
+		.current_ua = priv->detection.type == BC12_TYPE_CDP || priv->detection.type == BC12_TYPE_DCP ?
+			BC12_CHARGER_MAX_CURR_UA : BC12_CHARGER_MIN_CURR_UA,
+	};
+	bc12_callback_t callback = priv->bc12_notify ? priv->bc12_callback : NULL;
+	void *user_data = priv->bc12_user_data;
+	priv->bc12_notify = false;
+	udc_unlock_internal(dev);
+	/* The result callback may enable USB after detection, outside its lock. */
+	if (callback) {
+		callback(priv->bc12_dev, disconnected ? NULL : &result, user_data);
+	}
+	k_mutex_unlock(&priv->bc12_callback_lock);
+	return delay < 0 ? K_FOREVER : K_MSEC(delay);
+}
+
+static int stm32_bc12_init(const struct device *dev)
+{
+	const struct device *parent = dev->config;
+	struct udc_stm32_data *priv = udc_get_private(parent);
+
+	if (!device_is_ready(parent)) {
+		return -ENODEV;
+	}
+	if (priv->bc12_dev) {
+		return -EALREADY;
+	}
+	priv->bc12_dev = dev;
+	return 0;
+}
+
+static DEVICE_API(bc12, stm32_bc12_api) = {
+	.set_role = stm32_bc12_set_role,
+	.set_result_cb = stm32_bc12_set_callback,
+};
+
+#define STM32_BC12_DEFINE(node_id) \
+	DEVICE_DT_DEFINE(node_id, stm32_bc12_init, NULL, NULL, \
+		DEVICE_DT_GET(DT_PARENT(node_id)), POST_KERNEL, CONFIG_APPLICATION_INIT_PRIORITY, \
+		&stm32_bc12_api);
+DT_FOREACH_STATUS_OKAY(st_stm32_otg_bc12, STM32_BC12_DEFINE)
+#endif
+
 static void udc_stm32_thread_handler(void *arg1, void *arg2, void *arg3)
 {
 	const struct device *dev = arg1;
@@ -616,8 +799,17 @@ static void udc_stm32_thread_handler(void *arg1, void *arg2, void *arg3)
 	struct udc_stm32_msg msg;
 
 	while (true) {
-		k_msgq_get(&priv->msgq_data, &msg, K_FOREVER);
+#ifdef CONFIG_UDC_STM32_BC12
+		k_timeout_t wait = stm32_bc12_poll(dev);
+#else
+		k_timeout_t wait = K_FOREVER;
+#endif
+		if (k_msgq_get(&priv->msgq_data, &msg, wait) != 0) {
+			continue;
+		}
 		switch (msg.type) {
+		case UDC_STM32_MSG_BC12:
+			break;
 		case UDC_STM32_MSG_SETUP:
 			/* HAL copies SETUP packet contents to pcd.Setup */
 			udc_setup_received(dev, priv->pcd.Setup);
@@ -888,6 +1080,9 @@ int udc_stm32_init(const struct device *dev)
 	if (HAL_PCD_Stop(&priv->pcd) != HAL_OK) {
 		return -EIO;
 	}
+#ifdef CONFIG_UDC_STM32_BC12
+	priv->bc12_phy_uncertain = false;
+#endif
 
 	return 0;
 }
@@ -900,13 +1095,19 @@ static int udc_stm32_enable(const struct device *dev)
 	int ret;
 
 	LOG_DBG("Enable UDC");
+#ifdef CONFIG_UDC_STM32_BC12
+	if (stm32_bc12_active(priv)) {
+		return -EBUSY;
+	}
+#endif
 
 	udc_stm32_mem_init(dev);
 
 	status = HAL_PCD_Start(&priv->pcd);
 	if (status != HAL_OK) {
 		LOG_ERR("PCD_Start failed, %d", (int)status);
-		return -EIO;
+		ret = -EIO;
+		goto stop;
 	}
 
 	ret = udc_ep_enable_internal(dev, USB_CONTROL_EP_OUT,
@@ -914,7 +1115,7 @@ static int udc_stm32_enable(const struct device *dev)
 				     UDC_STM32_EP0_MAX_PACKET_SIZE, 0);
 	if (ret != 0) {
 		LOG_ERR("Failed enabling ep 0x%02x", USB_CONTROL_EP_OUT);
-		return ret;
+		goto stop;
 	}
 
 	ret = udc_ep_enable_internal(dev, USB_CONTROL_EP_IN,
@@ -922,12 +1123,30 @@ static int udc_stm32_enable(const struct device *dev)
 				     UDC_STM32_EP0_MAX_PACKET_SIZE, 0);
 	if (ret != 0) {
 		LOG_ERR("Failed enabling ep 0x%02x", USB_CONTROL_EP_IN);
-		return ret;
+		int cleanup = udc_ep_disable_internal(dev, USB_CONTROL_EP_OUT);
+
+		if (cleanup != 0) {
+			LOG_ERR("Control endpoint rollback failed, %d", cleanup);
+		}
+		goto stop;
 	}
 
 	irq_enable(cfg->irqn);
 
 	return 0;
+
+stop:
+	/* Start may attach the PHY before endpoint setup fails. The public UDC
+	 * remains disabled on failure, so it must not leave a live USB pull-up. */
+	status = HAL_PCD_Stop(&priv->pcd);
+	if (status != HAL_OK) {
+		LOG_ERR("PCD_Stop after enable failure failed, %d", (int)status);
+#ifdef CONFIG_UDC_STM32_BC12
+		/* A new measurement must not trust that logical disabled state. */
+		priv->bc12_phy_uncertain = true;
+#endif
+	}
+	return ret;
 }
 
 static int udc_stm32_disable(const struct device *dev)
@@ -964,6 +1183,9 @@ static int udc_stm32_shutdown(const struct device *dev)
 	HAL_StatusTypeDef status;
 	int err;
 
+#ifdef CONFIG_UDC_STM32_BC12
+	stm32_bc12_cancel(priv);
+#endif
 	status = HAL_PCD_DeInit(&priv->pcd);
 	if (status != HAL_OK) {
 		LOG_ERR("PCD_DeInit failed, %d", (int)status);
@@ -1286,6 +1508,10 @@ static int udc_stm32_driver_preinit(const struct device *dev)
 	}
 
 	priv->dev = dev;
+
+#ifdef CONFIG_UDC_STM32_BC12
+	k_mutex_init(&priv->bc12_callback_lock);
+#endif
 
 	k_msgq_init(&priv->msgq_data, priv->msgq_buf, sizeof(struct udc_stm32_msg),
 		    CONFIG_UDC_STM32_MAX_QMESSAGES);

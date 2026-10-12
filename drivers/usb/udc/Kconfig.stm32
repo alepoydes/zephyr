@@ -18,6 +18,18 @@ config UDC_STM32
 
 if UDC_STM32
 
+config UDC_STM32_BC12
+	bool "STM32 OTG charger detection"
+	default y
+	depends on DT_HAS_ST_STM32_OTG_BC12_ENABLED
+	depends on SOC_SERIES_STM32F4X
+	select USB_BC12
+	help
+	  Expose the embedded full-speed PHY charger detector through a BC1.2
+	  child device. Detection requires an initialized but disabled UDC;
+	  USB attachment is rejected until detection finishes or is canceled.
+	  Supported F4 parts are STM32F412, STM32F413 and STM32F423.
+
 config UDC_STM32_STACK_SIZE
 	int "UDC controller driver internal thread stack size"
 	default 512

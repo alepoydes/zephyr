@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+description: |
+  Embedded full-speed USB PHY charger detection on STM32F412/F413/F423.
+  This node is a child of the STM32 OTG device controller. The controller
+  must be initialized and disabled before selecting portable-device mode.
+  Enable USB only after detection completes; selecting disconnected mode
+  cancels detection and restores the PHY. Charging-port mode is unsupported.
+
+compatible: "st,stm32-otg-bc12"
+include:
+  - name: usb-bc12.yaml
+    property-blocklist: [charging-mode]
+
+properties:
+  charging-mode:
+    type: string
+    default: "BC12_TYPE_NONE"
+    enum:
+      - BC12_TYPE_NONE

@@ -1,0 +1,4 @@
+tests:
+  drivers.usb.stm32_bc12:
+    tags: [drivers, usb, bc12]
+    platform_allow: native_sim
