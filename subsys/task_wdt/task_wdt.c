@@ -183,12 +183,17 @@ int task_wdt_add(uint32_t reload_period, task_wdt_callback_t callback,
 #ifdef CONFIG_TASK_WDT_HW_FALLBACK
 			if (!hw_wdt_started && hw_wdt_dev) {
 				/* also start fallback hw wdt */
-				wdt_setup(hw_wdt_dev,
+				int ret = wdt_setup(hw_wdt_dev,
 					WDT_OPT_PAUSE_HALTED_BY_DBG
 #ifdef CONFIG_TASK_WDT_HW_FALLBACK_PAUSE_IN_SLEEP
 					| WDT_OPT_PAUSE_IN_SLEEP
 #endif
 				);
+				if (ret < 0) {
+					channels[id].reload_period = 0;
+					k_spin_unlock(&channels_lock, key);
+					return ret;
+				}
 				hw_wdt_started = true;
 			}
 #endif
