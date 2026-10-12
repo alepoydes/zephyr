@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+tests:
+  drivers.uart.cmsdk_apb.completion:
+    tags:
+      - drivers
+      - uart
+    platform_allow:
+      - mps2/an385
+    harness: ztest

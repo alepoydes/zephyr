@@ -379,7 +379,10 @@ static void uart_cmsdk_apb_irq_rx_disable(const struct device *dev)
  */
 static int uart_cmsdk_apb_irq_tx_complete(const struct device *dev)
 {
-	return uart_cmsdk_apb_irq_tx_ready(dev);
+	const struct uart_cmsdk_apb_config *dev_cfg = dev->config;
+
+	/* Completion is independent of whether TX interrupts are enabled. */
+	return !(dev_cfg->uart->state & UART_TX_BF);
 }
 
 /**
