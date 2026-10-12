@@ -19,6 +19,16 @@ SECTION_PROLOGUE(_NOINIT_SECTION_NAME,(NOLOAD),)
 #include <snippets-noinit.ld>
 #endif
 
+#ifdef CONFIG_USERSPACE
+	/* MPU-aligned user stacks can require substantially more alignment than
+	 * ordinary noinit objects. Place them first so the output section's
+	 * alignment also satisfies the first stack, without an interior gap.
+	 */
+	z_user_stacks_start = .;
+	*(.user_stacks*)
+	z_user_stacks_end = .;
+#endif /* CONFIG_USERSPACE */
+
         *(.noinit)
         *(".noinit.*")
 #ifdef CONFIG_LLEXT
@@ -26,11 +36,6 @@ SECTION_PROLOGUE(_NOINIT_SECTION_NAME,(NOLOAD),)
         *(.llext_ext_heap)
         *(.llext_metadata_heap)
 #endif /* CONFIG_LLEXT */
-#ifdef CONFIG_USERSPACE
-	z_user_stacks_start = .;
-	*(.user_stacks*)
-	z_user_stacks_end = .;
-#endif /* CONFIG_USERSPACE */
 
 /* Located in generated directory. This file is populated by the
  * zephyr_linker_sources() Cmake function.
