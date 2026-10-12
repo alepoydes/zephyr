@@ -119,7 +119,6 @@ static int iwdg_stm32_setup(const struct device *dev, uint8_t options)
 {
 	const struct iwdg_stm32_config *cfg = dev->config;
 	struct iwdg_stm32_data *data = dev->data;
-	uint32_t tickstart;
 
 	/* Deactivate running when debugger is attached. */
 	if (options & WDT_OPT_PAUSE_HALTED_BY_DBG) {
@@ -162,8 +161,6 @@ static int iwdg_stm32_setup(const struct device *dev, uint8_t options)
 	LL_IWDG_SetPrescaler(cfg->instance, data->prescaler);
 	LL_IWDG_SetReloadCounter(cfg->instance, data->reload);
 
-	tickstart = k_uptime_get_32();
-
 #ifdef CONFIG_IWDG_STM32_EARLY_WAKEUP
 	if (data->reload < 2U) {
 		/* Early wake-up is not possible if counter is
@@ -185,11 +182,12 @@ static int iwdg_stm32_setup(const struct device *dev, uint8_t options)
 	iwdg_stm32_irq_config(dev);
 #endif /* CONFIG_IWDG_STM32_EARLY_WAKEUP */
 
-	/* Wait for the update operation completed */
-	while (LL_IWDG_IsReady(cfg->instance) == 0) {
-		if ((k_uptime_get_32() - tickstart) > IWDG_SR_UPDATE_TIMEOUT) {
-			return -ENODEV;
-		}
+	/* Setup can run with interrupts locked (e.g. task watchdog startup).
+	 * Use the cycle counter so a missing update cannot stop the timeout.
+	 */
+	if (!WAIT_FOR(LL_IWDG_IsReady(cfg->instance),
+		      IWDG_SR_UPDATE_TIMEOUT * USEC_PER_MSEC, NULL)) {
+		return -ENODEV;
 	}
 
 	/* Reload counter just before leaving */
