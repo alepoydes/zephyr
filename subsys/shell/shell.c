@@ -1241,23 +1241,29 @@ static void shell_log_process(const struct shell *sh)
 			k_sleep(K_MSEC(15));
 		}
 
-	} while (processed && !k_event_test(&sh->ctx->signal_event, SHELL_SIGNAL_RXRDY));
+	} while (processed && !k_event_test(&sh->ctx->signal_event,
+					  SHELL_SIGNAL_RXRDY | SHELL_SIGNAL_RESET));
 }
 
-static int instance_init(const struct shell *sh,
-			 const void *transport_config,
-			 struct shell_backend_config_flags cfg_flags)
+#if defined(CONFIG_SHELL_PROMPT_CHANGE) && CONFIG_SHELL_PROMPT_CHANGE
+static int prompt_set(const struct shell *sh, const char *prompt)
 {
-	__ASSERT_NO_MSG((sh->shell_flag == SHELL_FLAG_CRLF_DEFAULT) ||
-			(sh->shell_flag == SHELL_FLAG_OLF_CRLF));
+	size_t length = z_shell_strlen(prompt);
 
-	memset(sh->ctx, 0, sizeof(*sh->ctx));
+	if (length + 1 > CONFIG_SHELL_PROMPT_BUFF_SIZE) {
+		return -EINVAL;
+	}
+	strcpy(sh->ctx->prompt, prompt);
+	sh->ctx->vt100_ctx.cons.name_len = length;
+	return 0;
+}
+#endif
+
+static void context_init(const struct shell *sh, struct shell_backend_config_flags cfg_flags)
+{
 	if (CONFIG_SHELL_CMD_ROOT[0]) {
 		sh->ctx->selected_cmd = root_cmd_find(CONFIG_SHELL_CMD_ROOT);
 	}
-
-	k_event_init(&sh->ctx->signal_event);
-	k_sem_init(&sh->ctx->lock_sem, 1, 1);
 
 	if (IS_ENABLED(CONFIG_SHELL_STATS)) {
 		sh->stats->log_lost_cnt = 0;
@@ -1271,7 +1277,7 @@ static int instance_init(const struct shell *sh,
 					CONFIG_SHELL_DEFAULT_TERMINAL_HEIGHT;
 
 #if defined(CONFIG_SHELL_PROMPT_CHANGE) && CONFIG_SHELL_PROMPT_CHANGE
-	shell_prompt_change(sh, sh->default_prompt);
+	(void)prompt_set(sh, sh->default_prompt);
 #else
 	sh->ctx->prompt = sh->default_prompt;
 	sh->ctx->vt100_ctx.cons.name_len = z_shell_strlen(sh->ctx->prompt);
@@ -1286,6 +1292,19 @@ static int instance_init(const struct shell *sh,
 	cfg_flags.echo        &= IS_ENABLED(CONFIG_SHELL_ECHO_STATUS);
 	cfg_flags.mode_delete &= IS_ENABLED(CONFIG_SHELL_BACKSPACE_MODE_DELETE);
 	sh->ctx->cfg.flags = cfg_flags;
+}
+
+static int instance_init(const struct shell *sh,
+			 const void *transport_config,
+			 struct shell_backend_config_flags cfg_flags)
+{
+	__ASSERT_NO_MSG((sh->shell_flag == SHELL_FLAG_CRLF_DEFAULT) ||
+			(sh->shell_flag == SHELL_FLAG_OLF_CRLF));
+
+	memset(sh->ctx, 0, sizeof(*sh->ctx));
+	k_event_init(&sh->ctx->signal_event);
+	k_sem_init(&sh->ctx->lock_sem, 1, 1);
+	context_init(sh, cfg_flags);
 
 	int ret = sh->iface->api->init(sh->iface, transport_config,
 				       transport_evt_handler,
@@ -1352,6 +1371,26 @@ static void kill_handler(const struct shell *sh)
 	CODE_UNREACHABLE;
 }
 
+static void reset_handler(const struct shell *sh)
+{
+	bool handle_log = z_flag_handle_log_get(sh);
+	uint32_t log_level = sh->ctx->log_level;
+
+	if (IS_ENABLED(CONFIG_SHELL_LOG_BACKEND)) {
+		z_shell_log_backend_disable(sh->log_backend);
+	}
+	history_purge(sh);
+	/* All parser/configuration fields precede the live event and lock. */
+	memset(sh->ctx, 0, offsetof(struct shell_ctx, signal_event));
+	sh->ctx->ret_val = 0;
+	sh->fprintf_ctx->ctrl_blk->buffer_cnt = 0;
+	context_init(sh, sh->ctx->reset_cfg);
+	z_flag_handle_log_set(sh, handle_log);
+	sh->ctx->log_level = log_level;
+	state_set(sh, SHELL_STATE_INITIALIZED);
+	k_event_post(&sh->ctx->signal_event, SHELL_SIGNAL_RESET_DONE);
+}
+
 void shell_thread(void *shell_handle, void *arg_log_backend,
 		  void *arg_log_level)
 {
@@ -1378,13 +1417,15 @@ void shell_thread(void *shell_handle, void *arg_log_backend,
 		k_event_wait(&sh->ctx->signal_event,
 			     SHELL_SIGNAL_RXRDY |
 			     SHELL_SIGNAL_LOG_MSG |
-			     SHELL_SIGNAL_KILL,
+			     SHELL_SIGNAL_KILL |
+			     SHELL_SIGNAL_RESET,
 			     false,
 			     K_FOREVER);
 
 		z_shell_lock(sh);
 
 		shell_signal_handle(sh, SHELL_SIGNAL_KILL, kill_handler);
+		shell_signal_handle(sh, SHELL_SIGNAL_RESET, reset_handler);
 		shell_signal_handle(sh, SHELL_SIGNAL_RXRDY, shell_process);
 		if (IS_ENABLED(CONFIG_SHELL_LOG_BACKEND)) {
 			shell_signal_handle(sh, SHELL_SIGNAL_LOG_MSG,
@@ -1506,6 +1547,26 @@ int shell_stop(const struct shell *sh)
 		z_shell_log_backend_disable(sh->log_backend);
 	}
 
+	return 0;
+}
+
+int shell_reset(const struct shell *sh, struct shell_backend_config_flags cfg_flags)
+{
+	if (k_is_in_isr() || k_current_get() == sh->ctx->tid) {
+		return -EWOULDBLOCK;
+	}
+	if (!sh->ctx->tid) {
+		return -ENODEV;
+	}
+
+	/* The shell releases lock_sem while invoking commands and bypass callbacks.
+	 * Schedule reset on its worker so those operations finish before reset.
+	 * Lifecycle operations, including concurrent resets, are caller-serialized.
+	 */
+	sh->ctx->reset_cfg = cfg_flags;
+	k_event_post(&sh->ctx->signal_event, SHELL_SIGNAL_RESET);
+	k_event_wait(&sh->ctx->signal_event, SHELL_SIGNAL_RESET_DONE, false, K_FOREVER);
+	k_event_clear(&sh->ctx->signal_event, SHELL_SIGNAL_RESET_DONE);
 	return 0;
 }
 
@@ -1703,24 +1764,14 @@ int shell_prompt_change(const struct shell *sh, const char *prompt)
 		return -EINVAL;
 	}
 
-	size_t prompt_length = z_shell_strlen(prompt);
-
 	if (!z_shell_trylock(sh, SHELL_TX_MTX_TIMEOUT)) {
 		return -EBUSY;
 	}
 
-	if (prompt_length + 1 > CONFIG_SHELL_PROMPT_BUFF_SIZE) {
-		z_shell_unlock(sh);
-		return -EINVAL;
-	}
-
-	strcpy(sh->ctx->prompt, prompt);
-
-	sh->ctx->vt100_ctx.cons.name_len = prompt_length;
-
+	int err = prompt_set(sh, prompt);
 	z_shell_unlock(sh);
 
-	return 0;
+	return err;
 #else
 	return -EPERM;
 #endif

@@ -976,6 +976,8 @@ enum shell_signal {
 	SHELL_SIGNAL_LOG_MSG = BIT(1),
 	SHELL_SIGNAL_KILL = BIT(2),
 	SHELL_SIGNAL_TXDONE = BIT(3),
+	SHELL_SIGNAL_RESET = BIT(4),
+	SHELL_SIGNAL_RESET_DONE = BIT(5),
 };
 
 /**
@@ -1045,6 +1047,7 @@ struct shell_ctx {
 	struct k_sem lock_sem;
 	k_tid_t tid;
 	int ret_val;
+	struct shell_backend_config_flags reset_cfg;
 };
 
 extern const struct log_backend_api log_backend_shell_api;
@@ -1182,6 +1185,27 @@ int shell_start(const struct shell *sh);
  * @return Standard error code.
  */
 int shell_stop(const struct shell *sh);
+
+/**
+ * @brief Stop processing and reset a shell session without destroying its thread.
+ *
+ * Waits for the current command or bypass callback to finish, then clears input,
+ * history, bypass, prompt, terminal state and buffered formatted output. Applies
+ * @p cfg_flags as shell_init() does. The transport remains initialized and the
+ * shell thread remains alive. Call shell_start() to resume processing.
+ *
+ * Call from an external thread, not from an ISR or shell callback. The caller
+ * must serialize lifecycle operations, stop admitting old-session input and
+ * discard old transport buffers. This function does not cancel a running command
+ * or discard data already queued by the transport. Log policy is retained.
+ *
+ * @param sh Pointer to an initialized shell instance.
+ * @param cfg_flags Backend configuration for the next session.
+ * @retval 0 Session reset; processing is stopped.
+ * @retval -ENODEV Shell is uninitialized.
+ * @retval -EWOULDBLOCK Called from an ISR or the shell thread.
+ */
+int shell_reset(const struct shell *sh, struct shell_backend_config_flags cfg_flags);
 
 /**
  * @brief Terminal default text color for shell_fprintf function.
