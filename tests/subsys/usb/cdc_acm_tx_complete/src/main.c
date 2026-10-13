@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <string.h>
 #include <zephyr/drivers/uart.h>
+#include <zephyr/drivers/usb/udc.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/usb/usbd.h>
 #include <zephyr/usb/usbh.h>
 #include <zephyr/ztest.h>
@@ -12,13 +14,62 @@ static const struct device *const uart = DEVICE_DT_GET(DT_NODELABEL(test_uart));
 static struct usb_device *device;
 K_SEM_DEFINE(probed, 0, 1);
 K_SEM_DEFINE(transferred, 0, 1);
+K_SEM_DEFINE(received, 0, 2);
+K_SEM_DEFINE(rx_armed, 0, 2);
+K_SEM_DEFINE(rx_failed, 0, 1);
 static uint8_t payload[64];
 static size_t pending;
 static int complete;
+static uint8_t last_received;
+static atomic_t fail_rx_alloc;
+static atomic_t fail_rx_enqueue;
+static atomic_t rx_accepted;
+
+struct net_buf *__real_net_buf_alloc_fixed(struct net_buf_pool *pool, k_timeout_t timeout);
+int __real_usbd_ep_enqueue(const struct usbd_class_data *c_data, struct net_buf *buf);
+
+struct net_buf *__wrap_net_buf_alloc_fixed(struct net_buf_pool *pool, k_timeout_t timeout)
+{
+	/* The CDC endpoint pool is the only two-buffer pool of UDC requests here. */
+	if (pool->buf_count == 2 && pool->user_data_size == sizeof(struct udc_buf_info) &&
+	    atomic_set(&fail_rx_alloc, 0)) {
+		k_sem_give(&rx_failed);
+		return NULL;
+	}
+
+	return __real_net_buf_alloc_fixed(pool, timeout);
+}
+
+int __wrap_usbd_ep_enqueue(const struct usbd_class_data *c_data, struct net_buf *buf)
+{
+	const uint8_t ep = udc_get_buf_info(buf)->ep;
+
+	if ((ep & USB_EP_DIR_IN) == 0 && atomic_set(&fail_rx_enqueue, 0)) {
+		k_sem_give(&rx_failed);
+		return -EIO;
+	}
+
+	int ret = __real_usbd_ep_enqueue(c_data, buf);
+
+	if (ret == 0 && (ep & USB_EP_DIR_IN) == 0) {
+		atomic_inc(&rx_accepted);
+		k_sem_give(&rx_armed);
+	}
+
+	return ret;
+}
 
 static void uart_callback(const struct device *dev, void *context)
 {
 	uart_irq_update(dev);
+	if (uart_irq_rx_ready(dev)) {
+		uint8_t value;
+
+		if (uart_fifo_read(dev, &value, 1) == 1) {
+			last_received = value;
+			k_sem_give(&received);
+		}
+	}
 	if (uart_irq_tx_ready(dev)) {
 		if (pending) {
 			int written = uart_fifo_fill(dev, payload, pending);
@@ -70,7 +121,64 @@ static void *setup(void)
 	zassert_not_null(device);
 	zassert_equal(device->state, USB_STATE_CONFIGURED);
 	zassert_ok(uart_irq_callback_user_data_set(uart, uart_callback, NULL));
+	uart_irq_rx_enable(uart);
+	zassert_ok(k_sem_take(&rx_armed, K_SECONDS(1)));
 	return NULL;
+}
+
+static void write_byte(uint8_t endpoint, uint8_t value)
+{
+	struct uhc_transfer *xfer = usbh_xfer_alloc(device, endpoint, transfer_done, NULL);
+	struct net_buf *buf = usbh_xfer_buf_alloc(device, 1);
+
+	zassert_not_null(xfer);
+	zassert_not_null(buf);
+	net_buf_add_u8(buf, value);
+	zassert_ok(usbh_xfer_buf_add(device, xfer, buf));
+	k_sem_reset(&transferred);
+	zassert_ok(usbh_xfer_enqueue(device, xfer));
+	zassert_ok(k_sem_take(&transferred, K_MSEC(250)), "Host OUT remained unarmed");
+	zassert_ok(xfer->err);
+	usbh_xfer_free(device, xfer);
+	usbh_xfer_buf_free(device, buf);
+	zassert_ok(k_sem_take(&received, K_MSEC(250)), "CDC UART did not receive host OUT");
+	zassert_equal(last_received, value);
+}
+
+ZTEST(cdc, test_rx_rearms_after_allocation_and_enqueue_failure)
+{
+	const struct usb_ep_descriptor *endpoint = NULL;
+
+	for (uint8_t ep = 1; ep < 0x10; ep++) {
+		const struct usb_ep_descriptor *candidate = usbh_desc_get_endpoint(device, ep);
+
+		if (candidate &&
+		    (candidate->bmAttributes & USB_EP_TRANSFER_TYPE_MASK) ==
+		    USB_EP_TYPE_BULK) {
+			endpoint = candidate;
+			break;
+		}
+	}
+	zassert_not_null(endpoint);
+
+	for (int failure = 0; failure < 2; failure++) {
+		/* The current OUT request completes; its replacement fails once. */
+		k_sem_reset(&rx_failed);
+		atomic_set(failure ? &fail_rx_enqueue : &fail_rx_alloc, 1);
+		write_byte(endpoint->bEndpointAddress, (uint8_t)(0x41 + failure * 2));
+		zassert_ok(k_sem_take(&rx_failed, K_MSEC(250)), "RX failure was not injected");
+		zassert_equal(atomic_get(&fail_rx_alloc), 0);
+		zassert_equal(atomic_get(&fail_rx_enqueue), 0);
+
+		/* A public UART trigger must be able to replace the failed request. */
+		int prior = atomic_get(&rx_accepted);
+
+		uart_irq_rx_enable(uart);
+		zassert_ok(k_sem_take(&rx_armed, K_MSEC(250)), "RX request was not rearmed");
+		zassert_equal(atomic_get(&rx_accepted), prior + 1);
+		write_byte(endpoint->bEndpointAddress, (uint8_t)(0x42 + failure * 2));
+		zassert_ok(k_sem_take(&rx_armed, K_MSEC(250)), "RX did not remain armed");
+	}
 }
 
 static void read_packet(uint8_t endpoint, size_t capacity, size_t expected)
