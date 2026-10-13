@@ -188,7 +188,8 @@ static sys_slist_t br_servers;
 
 /* Pool for outgoing BR/EDR signaling packets, min MTU is 48 */
 NET_BUF_POOL_FIXED_DEFINE(br_sig_pool, CONFIG_BT_MAX_CONN,
-			  BT_L2CAP_BUF_SIZE(L2CAP_BR_MIN_MTU), 8, NULL);
+			  BT_L2CAP_BUF_SIZE(L2CAP_BR_MIN_MTU),
+			  CONFIG_BT_CONN_TX_USER_DATA_SIZE, NULL);
 
 #if defined(CONFIG_BT_L2CAP_RET_FC)
 static void br_tx_buf_destroy(struct net_buf *buf)
@@ -2616,16 +2617,6 @@ static void l2cap_br_conn_req(struct bt_l2cap_br *l2cap, uint8_t ident,
 		goto no_chan;
 	}
 
-	/*
-	 * Report security violation for non SDP channel without encryption when
-	 * remote supports SSP.
-	 */
-	if (server->sec_level != BT_SECURITY_L0 &&
-	    BT_FEAT_HOST_SSP(conn->br.features) && !conn->encrypt) {
-		result = BT_L2CAP_BR_ERR_SEC_BLOCK;
-		goto no_chan;
-	}
-
 	if (!L2CAP_BR_CID_IS_DYN(scid)) {
 		result = BT_L2CAP_BR_ERR_INVALID_SCID;
 		goto no_chan;
@@ -2667,6 +2658,9 @@ static void l2cap_br_conn_req(struct bt_l2cap_br *l2cap, uint8_t ident,
 	BR_CHAN(chan)->rx.mtu = MIN(BR_CHAN(chan)->rx.mtu, BT_L2CAP_RX_MTU);
 #endif /* CONFIG_BT_L2CAP_RET_FC */
 
+	/* GAP 5.2.2.2: a responder may establish security after the request,
+	 * but must not confirm the channel before that procedure succeeds.
+	 */
 	switch (l2cap_br_conn_security(chan, psm)) {
 	case L2CAP_CONN_SECURITY_PENDING:
 		result = BT_L2CAP_BR_PENDING;
@@ -5104,35 +5098,31 @@ reject:
 	return 0;
 }
 
-static void l2cap_br_conn_pend(struct bt_l2cap_chan *chan, uint8_t status)
+/* Returns false if the security result released the pending channel. */
+static bool l2cap_br_conn_pend(struct bt_l2cap_chan *chan, uint8_t status)
 {
 	struct net_buf *buf;
 	struct bt_l2cap_sig_hdr *hdr;
 	struct bt_l2cap_conn_req *req;
 
 	if (BR_CHAN(chan)->state != BT_L2CAP_CONNECTING) {
-		return;
+		return true;
 	}
 
 	LOG_DBG("chan %p status 0x%02x encr 0x%02x", chan, status, chan->conn->encrypt);
 
-	if (status) {
-		/*
-		 * Security procedure status is non-zero so respond with
-		 * security violation only as channel acceptor.
-		 */
+	if (status || (chan->conn->encrypt &&
+		       chan->conn->sec_level < BR_CHAN(chan)->required_sec_level)) {
+		/* Only the acceptor owes a response to a pending request. */
 		l2cap_br_conn_req_reply(chan, BT_L2CAP_BR_ERR_SEC_BLOCK);
 
-		/* Release channel allocated to outgoing connection request */
-		if (atomic_test_bit(BR_CHAN(chan)->flags, L2CAP_FLAG_CONN_PENDING)) {
-			l2cap_br_chan_cleanup(chan);
-		}
-
-		return;
+		/* Neither endpoint may retain a failed security negotiation. */
+		l2cap_br_chan_cleanup(chan);
+		return false;
 	}
 
 	if (!chan->conn->encrypt) {
-		return;
+		return true;
 	}
 
 	/*
@@ -5163,14 +5153,18 @@ static void l2cap_br_conn_pend(struct bt_l2cap_chan *chan, uint8_t status)
 
 		l2cap_br_chan_send_req(BR_CHAN(chan), buf, L2CAP_BR_CONN_TIMEOUT);
 	}
+
+	return true;
 }
 
 void l2cap_br_encrypt_change(struct bt_conn *conn, uint8_t hci_status)
 {
-	struct bt_l2cap_chan *chan;
+	struct bt_l2cap_chan *chan, *next;
 
-	SYS_SLIST_FOR_EACH_CONTAINER(&conn->channels, chan, node) {
-		l2cap_br_conn_pend(chan, hci_status);
+	SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&conn->channels, chan, next, node) {
+		if (!l2cap_br_conn_pend(chan, hci_status)) {
+			continue;
+		}
 
 		if (chan->conn == NULL) {
 			LOG_WRN("Invalid ACL conn for chan %p", chan);
