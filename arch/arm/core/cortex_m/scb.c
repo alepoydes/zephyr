@@ -147,8 +147,9 @@ void z_arm_init_arch_hw_at_boot(void)
 #endif /* CONFIG_ICACHE */
 #endif /* CONFIG_ARCH_CACHE */
 
-	/* Restore Interrupts */
-	__enable_irq();
+	/* Keep PRIMASK set until the first thread starts. The vector table and
+	 * kernel interrupt priorities have not been initialized yet.
+	 */
 
 	barrier_dsync_fence_full();
 	barrier_isync_fence_full();

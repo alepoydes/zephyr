@@ -91,6 +91,10 @@ SECTION_SUBSEC_FUNC(TEXT,_reset_section,z_arm_reset)
 SECTION_SUBSEC_FUNC(TEXT,_reset_section,__start)
 
 #if defined(CONFIG_INIT_ARCH_HW_AT_BOOT)
+    /* A chain-loading bootloader may leave interrupts enabled. Mask them
+     * before changing CONTROL, stacks or the inherited vector-table state.
+     */
+    cpsid i
     /* Reset CONTROL register */
     movs.n r0, #0
     msr CONTROL, r0
