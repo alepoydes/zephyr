@@ -30,12 +30,14 @@ static struct k_thread usbd_thread_data;
 
 K_MSGQ_DEFINE(usbd_msgq, sizeof(struct udc_event),
 	      CONFIG_USBD_MAX_UDC_MSG, sizeof(uint32_t));
+static K_SEM_DEFINE(usbd_wakeup, 0, 1);
 
 static int usbd_event_carrier(const struct device *dev,
 			      const struct udc_event *const event)
 {
 	struct usbd_context *const uds_ctx = (void *)udc_get_event_ctx(dev);
 	k_spinlock_key_t key;
+	int ret = 0;
 
 	if (event->type == UDC_EVT_EP_REQUEST) {
 		/*
@@ -45,9 +47,20 @@ static int usbd_event_carrier(const struct device *dev,
 		key = k_spin_lock(&uds_ctx->ep_event_lock);
 		sys_slist_append(&uds_ctx->ep_events, &event->buf->node);
 		k_spin_unlock(&uds_ctx->ep_event_lock, key);
+	} else {
+		ret = k_msgq_put(&usbd_msgq, event, K_NO_WAIT);
 	}
 
-	return k_msgq_put(&usbd_msgq, event, K_NO_WAIT);
+	/* Endpoint completions already have a lossless queue. A completion may
+	 * produce another immediately while the core is draining that queue;
+	 * one message per completion would accumulate redundant notifications
+	 * and could fail after ownership of the buffer has already transferred.
+	 */
+	if (!ret) {
+		k_sem_give(&usbd_wakeup);
+	}
+
+	return ret;
 }
 
 static void event_handler_ep_request(struct usbd_context *const uds_ctx)
@@ -58,7 +71,7 @@ static void event_handler_ep_request(struct usbd_context *const uds_ctx)
 	sys_snode_t *node;
 	int ret;
 
-	while (!sys_slist_is_empty(&uds_ctx->ep_events)) {
+	while (true) {
 		key = k_spin_lock(&uds_ctx->ep_event_lock);
 		node = sys_slist_get(&uds_ctx->ep_events);
 		k_spin_unlock(&uds_ctx->ep_event_lock, key);
@@ -224,16 +237,28 @@ static void usbd_thread(void *p1, void *p2, void *p3)
 	struct udc_event event;
 
 	while (true) {
-		k_msgq_get(&usbd_msgq, &event, K_FOREVER);
+		k_sem_take(&usbd_wakeup, K_FOREVER);
 
-		uds_ctx = (void *)udc_get_event_ctx(event.dev);
-		__ASSERT(uds_ctx != NULL, "USB device context is missing");
-		/* Public configuration and teardown APIs use the same mutex, so
-		 * preemption cannot expose a partially processed transfer to them.
+		while (k_msgq_get(&usbd_msgq, &event, K_NO_WAIT) == 0) {
+			uds_ctx = (void *)udc_get_event_ctx(event.dev);
+			__ASSERT(uds_ctx != NULL, "USB device context is missing");
+			/* Public configuration and teardown APIs use the same mutex,
+			 * so preemption cannot expose a partially processed transfer.
+			 */
+			usbd_device_lock(uds_ctx);
+			usbd_event_handler(uds_ctx, &event);
+			usbd_device_unlock(uds_ctx);
+		}
+
+		/* Completions can arrive without a bus event, including for another
+		 * controller while the shared bus queue is full. A binary wakeup
+		 * coalesces notifications; each buffer remains on its owner's list.
 		 */
-		usbd_device_lock(uds_ctx);
-		usbd_event_handler(uds_ctx, &event);
-		usbd_device_unlock(uds_ctx);
+		STRUCT_SECTION_FOREACH(usbd_context, ctx) {
+			usbd_device_lock(ctx);
+			event_handler_ep_request(ctx);
+			usbd_device_unlock(ctx);
+		}
 	}
 }
 

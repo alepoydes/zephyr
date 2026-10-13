@@ -7,5 +7,8 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(test_usb_device_next)
 
 target_include_directories(app PRIVATE ${ZEPHYR_BASE}/subsys/usb/host)
+target_include_directories(app PRIVATE ${ZEPHYR_BASE}/subsys/usb/device_next
+                                       ${ZEPHYR_BASE}/drivers/usb/udc)
+target_link_options(app PUBLIC -Wl,--wrap=usbd_class_handle_xfer)
 
 target_sources(app PRIVATE src/main.c)

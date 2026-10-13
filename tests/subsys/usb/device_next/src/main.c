@@ -8,9 +8,12 @@
 #include <zephyr/sys/atomic.h>
 #include <zephyr/usb/usbd.h>
 #include <zephyr/usb/usbh.h>
+#include <zephyr/drivers/usb/udc.h>
 
 #include "usbh_ch9.h"
 #include "usbh_device.h"
+#include "usbd_class.h"
+#include "udc_common.h"
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(usb_test, LOG_LEVEL_INF);
@@ -80,6 +83,86 @@ static int vendor_disable_request(const struct usbd_context *const ctx,
 }
 
 USBD_VREQUEST_DEFINE(test_disable_vreq, 0x7a, NULL, vendor_disable_request);
+
+#define BURST_EP 0x82
+#define BURST_COMPLETIONS 3
+
+static struct net_buf *burst_buffers[BURST_COMPLETIONS];
+static atomic_t burst_counts[BURST_COMPLETIONS];
+K_SEM_DEFINE(burst_done, 0, BURST_COMPLETIONS);
+static int burst_error;
+static bool burst_bus_full;
+
+int __real_usbd_class_handle_xfer(struct usbd_context *ctx, struct net_buf *buf, int err);
+
+int __wrap_usbd_class_handle_xfer(struct usbd_context *ctx, struct net_buf *buf, int err)
+{
+	int result = __real_usbd_class_handle_xfer(ctx, buf, err);
+
+	for (size_t i = 0; i < ARRAY_SIZE(burst_buffers); i++) {
+		if (buf == burst_buffers[i]) {
+			atomic_inc(&burst_counts[i]);
+			k_sem_give(&burst_done);
+			break;
+		}
+	}
+	return result;
+}
+
+static int vendor_completion_burst(const struct usbd_context *ctx,
+				   const struct usb_setup_packet *setup,
+				   const struct net_buf *buf)
+{
+	struct usbd_class_node *class = usbd_class_get_by_ep((struct usbd_context *)ctx,
+							    BURST_EP);
+	const struct device *udc = ctx->dev;
+
+	ARG_UNUSED(setup);
+	ARG_UNUSED(buf);
+	if (class == NULL) {
+		burst_error = -ENODEV;
+		return 0;
+	}
+
+	/* This callback runs on the core thread. Fill only its bus-event queue;
+	 * completion events must remain accepted while it cannot drain that queue. */
+	for (unsigned int i = 0; i <= CONFIG_USBD_MAX_UDC_MSG; i++) {
+		int err = udc_submit_event(udc, UDC_EVT_SOF, 0);
+		if (err == -ENOMSG) {
+			burst_bus_full = true;
+			break;
+		}
+		if (err) {
+			burst_error = err;
+			return 0;
+		}
+	}
+	if (!burst_bus_full) {
+		burst_error = -EINVAL;
+		return 0;
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(burst_buffers); i++) {
+		struct net_buf *completion = udc_ep_buf_alloc(udc, BURST_EP, 0);
+		if (completion == NULL) {
+			burst_error = -ENOMEM;
+			break;
+		}
+		/* Retain two test references while the real loopback class releases
+		 * the completion's original reference. */
+		net_buf_ref(completion);
+		net_buf_ref(completion);
+		udc_get_buf_info(completion)->owner = class->c_data;
+		burst_buffers[i] = completion;
+		burst_error = udc_submit_ep_event(udc, completion, 0);
+		if (burst_error) {
+			break;
+		}
+	}
+	return 0;
+}
+
+USBD_VREQUEST_DEFINE(test_burst_vreq, 0x7b, NULL, vendor_completion_burst);
 
 static int test_cmp_string_desc(struct net_buf *const buf, const int idx)
 {
@@ -401,6 +484,60 @@ ZTEST(device_next, test_set_interface)
 	}
 }
 
+ZTEST(device_next, test_y_completion_burst_with_full_bus_queue)
+{
+	const uint8_t request_type = (USB_REQTYPE_TYPE_VENDOR << 5) |
+				     USB_REQTYPE_RECIPIENT_DEVICE;
+	struct usb_device *udev = usbh_device_get_any(&uhs_ctx);
+	uint8_t configuration;
+	int err;
+
+	if (!IS_ENABLED(CONFIG_UHC_VIRTUAL)) {
+		ztest_test_skip();
+		return;
+	}
+	zassert_not_null(udev, "No USB device available");
+	memset(burst_buffers, 0, sizeof(burst_buffers));
+	for (size_t i = 0; i < ARRAY_SIZE(burst_counts); i++) {
+		atomic_clear(&burst_counts[i]);
+	}
+	k_sem_reset(&burst_done);
+	burst_bus_full = false;
+	burst_error = 0;
+
+	err = k_mutex_lock(&udev->mutex, K_MSEC(200));
+	zassert_equal(err, 0, "Failed to lock host device");
+	err = usbh_req_setup(udev, request_type, 0x7b, 0, 0, 0, NULL);
+	k_mutex_unlock(&udev->mutex);
+	zassert_equal(burst_error, 0, "EP completion was rejected while bus queue was full");
+	zassert_equal(err, 0, "Vendor request did not finish");
+	zassert_true(burst_bus_full, "Bus queue was not filled");
+
+	for (size_t i = 0; i < ARRAY_SIZE(burst_buffers); i++) {
+		err = k_sem_take(&burst_done, K_SECONDS(1));
+		zassert_equal(err, 0, "EP completion was not delivered");
+		zassert_not_null(burst_buffers[i], "EP buffer was not allocated");
+		zassert_equal(atomic_get(&burst_counts[i]), 1,
+			      "EP completion was delivered more than once");
+		zassert_equal(burst_buffers[i]->ref, 2,
+			      "Loopback class did not release its EP buffer");
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(burst_buffers); i++) {
+		struct net_buf *buf = burst_buffers[i];
+
+		burst_buffers[i] = NULL;
+		net_buf_unref(buf);
+		net_buf_unref(buf);
+	}
+
+	err = k_mutex_lock(&udev->mutex, K_MSEC(200));
+	zassert_equal(err, 0, "Failed to lock host device");
+	err = usbh_req_get_cfg(udev, &configuration);
+	k_mutex_unlock(&udev->mutex);
+	zassert_equal(err, 0, "Control request failed after completion burst");
+	zassert_equal(configuration, 1, "Device lost its configuration");
+}
+
 ZTEST(device_next, test_z_vendor_request_serializes_disable)
 {
 	const uint8_t request_type = (USB_REQTYPE_TYPE_VENDOR << 5) |
@@ -506,6 +643,8 @@ static void *usb_test_enable(void)
 
 	err = usbd_device_register_vreq(&test_usbd, &test_disable_vreq);
 	zassert_equal(err, 0, "Failed to register vendor request (%d)", err);
+	err = usbd_device_register_vreq(&test_usbd, &test_burst_vreq);
+	zassert_equal(err, 0, "Failed to register burst request (%d)", err);
 
 	err = usbd_init(&test_usbd);
 	zassert_equal(err, 0, "Failed to initialize device support");
