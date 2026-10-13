@@ -1170,7 +1170,7 @@ static struct net_buf *l2cap_br_ret_fc_data_pull(struct bt_conn *conn, size_t am
 		CONTAINER_OF(pdu_ready, struct bt_l2cap_br_chan, _pdu_ready);
 
 	if (br_chan->_pdu_buf && bt_buf_has_view(br_chan->_pdu_buf)) {
-		LOG_ERR("already have view on %p", br_chan->_pdu_buf);
+		LOG_DBG("already have view on %p", br_chan->_pdu_buf);
 		return NULL;
 	}
 
@@ -1573,7 +1573,7 @@ struct net_buf *l2cap_br_data_pull(struct bt_conn *conn, size_t amount, size_t *
 	struct net_buf *q_pdu = CONTAINER_OF(tx_pdu, struct net_buf, node);
 
 	if (bt_buf_has_view(q_pdu)) {
-		LOG_ERR("already have view on %p", q_pdu);
+		LOG_DBG("already have view on %p", q_pdu);
 		return NULL;
 	}
 

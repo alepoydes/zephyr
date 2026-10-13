@@ -976,7 +976,7 @@ struct net_buf *l2cap_data_pull(struct bt_conn *conn,
 	__ASSERT_NO_MSG(conn->state == BT_CONN_CONNECTED);
 
 	if (bt_buf_has_view(fifo_pdu)) {
-		LOG_ERR("already have view on %p", fifo_pdu);
+		LOG_DBG("already have view on %p", fifo_pdu);
 		return NULL;
 	}
 
