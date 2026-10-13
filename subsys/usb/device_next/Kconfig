@@ -67,6 +67,20 @@ config USBD_THREAD_STACK_SIZE
 	help
 	  USB device stack thread stack size in bytes.
 
+config USBD_THREAD_PREEMPTIBLE
+	bool "Use a preemptible USB device stack thread"
+	depends on PREEMPT_ENABLED
+	help
+	  Allow higher-priority application threads to preempt USB event and
+	  control request processing. By default the stack thread is cooperative.
+
+config USBD_THREAD_PRIORITY
+	int "USB device stack thread priority"
+	default 8
+	help
+	  Thread priority within the selected scheduling class, passed to
+	  K_PRIO_PREEMPT() or K_PRIO_COOP().
+
 config USBD_MAX_UDC_MSG
 	int "Maximum number of UDC events"
 	default 10

@@ -68,6 +68,14 @@ static void event_handler_ep_request(struct usbd_context *const uds_ctx)
 			break;
 		}
 
+		/* Teardown can finish before already queued completions are consumed.
+		 * Their buffers still belong to the stack, but class state is gone.
+		 */
+		if (!usbd_is_initialized(uds_ctx)) {
+			net_buf_unref(buf);
+			continue;
+		}
+
 		bi = udc_get_buf_info(buf);
 		if (USB_EP_GET_IDX(bi->ep) == 0) {
 			ret = usbd_handle_ctrl_xfer(uds_ctx, buf, bi->err);
@@ -159,8 +167,8 @@ static ALWAYS_INLINE void usbd_event_handler(struct usbd_context *const uds_ctx,
 
 	/* Always check if there is a completed transfer request. */
 	event_handler_ep_request(uds_ctx);
-	if (event->type == UDC_EVT_EP_REQUEST) {
-		/* It has already been handled and cannot be another event type. */
+	if (!usbd_is_initialized(uds_ctx) || event->type == UDC_EVT_EP_REQUEST) {
+		/* No bus event remains to process, or teardown has finished. */
 		return;
 	}
 
@@ -219,9 +227,13 @@ static void usbd_thread(void *p1, void *p2, void *p3)
 		k_msgq_get(&usbd_msgq, &event, K_FOREVER);
 
 		uds_ctx = (void *)udc_get_event_ctx(event.dev);
-		__ASSERT(uds_ctx != NULL && usbd_is_initialized(uds_ctx),
-			 "USB device is not initialized");
+		__ASSERT(uds_ctx != NULL, "USB device context is missing");
+		/* Public configuration and teardown APIs use the same mutex, so
+		 * preemption cannot expose a partially processed transfer to them.
+		 */
+		usbd_device_lock(uds_ctx);
 		usbd_event_handler(uds_ctx, &event);
+		usbd_device_unlock(uds_ctx);
 	}
 }
 
@@ -283,11 +295,15 @@ int usbd_device_shutdown_core(struct usbd_context *const uds_ctx)
 
 static int usbd_pre_init(void)
 {
+	const int priority = IS_ENABLED(CONFIG_USBD_THREAD_PREEMPTIBLE) ?
+		K_PRIO_PREEMPT(CONFIG_USBD_THREAD_PRIORITY) :
+		K_PRIO_COOP(CONFIG_USBD_THREAD_PRIORITY);
+
 	k_thread_create(&usbd_thread_data, usbd_stack,
 			K_KERNEL_STACK_SIZEOF(usbd_stack),
 			usbd_thread,
 			NULL, NULL, NULL,
-			K_PRIO_COOP(8), 0, K_NO_WAIT);
+			priority, 0, K_NO_WAIT);
 
 	k_thread_name_set(&usbd_thread_data, "usbd");
 

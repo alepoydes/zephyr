@@ -7,6 +7,15 @@ tests:
     integration_platforms:
       - native_sim
     tags: usb
+  usb.device_next.preemptible:
+    platform_allow:
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64
+    tags: usb
+    extra_args:
+      - CONFIG_USBD_THREAD_PREEMPTIBLE=y
+      - CONFIG_USBD_THREAD_PRIORITY=8
   usb.device_next.build_all:
     platform_allow:
       - native_sim
