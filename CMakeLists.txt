@@ -919,7 +919,8 @@ add_custom_command(
   --file-list        ${syscalls_file_list_output}
   $<$<BOOL:${CONFIG_EMIT_ALL_SYSCALLS}>:--emit-all-syscalls>
   DEPENDS ${syscalls_subdirs_trigger} ${PARSE_SYSCALLS_HEADER_DEPENDS}
-          ${syscalls_file_list_output} syscalls_interface
+          ${syscalls_file_list_output}
+          $<TARGET_PROPERTY:syscalls_interface,INTERFACE_SOURCES> syscalls_interface
   )
 
 # Make sure Picolibc is built before the rest of the system; there's no explicit
