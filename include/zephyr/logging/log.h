@@ -809,13 +809,13 @@ extern struct k_mem_partition k_log_partition;
 	extern struct log_source_dynamic_data LOG_ITEM_DYNAMIC_DATA(GET_ARG_N(1, __VA_ARGS__));    \
                                                                                                    \
 	Z_LOG_MODULE_PARTITION(K_APP_DMEM)                                                         \
-	static const struct log_source_const_data *__log_current_const_data __unused =             \
+	static const struct log_source_const_data *const __log_current_const_data __unused =       \
 		Z_DO_LOG_MODULE_REGISTER(__VA_ARGS__)                                              \
 			? &Z_LOG_ITEM_CONST_DATA(GET_ARG_N(1, __VA_ARGS__))                        \
 			: NULL;                                                                    \
                                                                                                    \
 	Z_LOG_MODULE_PARTITION(K_APP_DMEM)                                                         \
-	static struct log_source_dynamic_data *__log_current_dynamic_data __unused =               \
+	static struct log_source_dynamic_data *const __log_current_dynamic_data __unused =         \
 		(Z_DO_LOG_MODULE_REGISTER(__VA_ARGS__) &&                                          \
 		 IS_ENABLED(CONFIG_LOG_RUNTIME_FILTERING))                                         \
 			? &LOG_ITEM_DYNAMIC_DATA(GET_ARG_N(1, __VA_ARGS__))                        \
