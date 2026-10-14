@@ -58,6 +58,7 @@ def generate_linker_headers(obj):
             "define_prefix": "DATA",
             "exists": False,
             "multiplier": int(args.datapct) + 100,
+            "fixed_size": args.data_size,
         },
         ".rodata": {
             "name": "rodata",
@@ -86,7 +87,9 @@ def generate_linker_headers(obj):
             sections[name]['size'] = one_sect['sh_size']
             sections[name]['exists'] = True
 
-            if "multiplier" in sections[name]:
+            if sections[name].get("fixed_size"):
+                sections[name]['size'] = sections[name]['fixed_size']
+            elif "multiplier" in sections[name]:
                 sections[name]['size'] *= sections[name]['multiplier'] / 100
                 sections[name]['size'] = int(sections[name]['size'])
 
@@ -113,6 +116,10 @@ def parse_args():
     )
     parser.add_argument(
         "--datapct", required=True, help="Multiplier to the size of reserved space for DATA region"
+    )
+    parser.add_argument(
+        "--data-size", type=int, default=0,
+        help="Fixed DATA region size in bytes; zero uses --datapct",
     )
     parser.add_argument("--rodata", required=True, help="Extra bytes to reserve for RODATA region")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose messages")
