@@ -46,6 +46,11 @@ void z_syscall_memory_error(const char *syscall, const void *ptr, size_t size, b
 		syscall, ptr, size, write ? "write" : "read");
 }
 
+void z_syscall_object_error(const char *syscall)
+{
+	LOG_ERR("syscall %s failed check: access denied", syscall);
+}
+
 /* The originally synchronization strategy made heavy use of recursive
  * irq_locking, which ports poorly to spinlocks which are
  * non-recursive.  Rather than try to redesign as part of
@@ -919,6 +924,24 @@ int k_object_validate(struct k_object *ko, enum k_objects otype,
 	}
 
 	return 0;
+}
+
+int k_object_validation_check(struct k_object *ko, const void *obj,
+			      enum k_objects otype, enum _obj_init_check init)
+{
+	int ret;
+
+	ret = k_object_validate(ko, otype, init);
+
+#ifdef CONFIG_LOG
+	if (ret != 0) {
+		k_object_dump_error(ret, obj, ko, otype);
+	}
+#else
+	ARG_UNUSED(obj);
+#endif
+
+	return ret;
 }
 
 int z_impl_k_object_access_check(const void *object)

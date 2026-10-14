@@ -528,31 +528,27 @@ void z_syscall_memory_error(const char *syscall, const void *ptr, size_t size, b
 #define K_SYSCALL_MEMORY_ARRAY_WRITE(ptr, nmemb, size) \
 	K_SYSCALL_MEMORY_ARRAY(ptr, nmemb, size, 1)
 
-static inline int k_object_validation_check(struct k_object *ko,
-					 const void *obj,
-					 enum k_objects otype,
-					 enum _obj_init_check init)
-{
-	int ret;
+/* Share validation and diagnostics across syscall translation units. */
+int k_object_validation_check(struct k_object *ko, const void *obj,
+			      enum k_objects otype, enum _obj_init_check init);
 
-	ret = k_object_validate(ko, otype, init);
+void z_syscall_object_error(const char *syscall);
 
-#ifdef CONFIG_LOG
-	if (ret != 0) {
-		k_object_dump_error(ret, obj, ko, otype);
-	}
-#else
-	ARG_UNUSED(obj);
-#endif
-
-	return ret;
-}
-
-#define K_SYSCALL_IS_OBJ(ptr, type, init) \
-	K_SYSCALL_VERIFY_MSG(k_object_validation_check(			\
-				     k_object_find((const void *)(ptr)),	\
-				     (const void *)(ptr),		\
-				     (type), (init)) == 0, "access denied")
+#define K_SYSCALL_IS_OBJ(ptr, type, init) ({ \
+	bool object_failed = k_object_validation_check( \
+		k_object_find((const void *)(ptr)), (const void *)(ptr), \
+		(type), (init)) != 0; \
+	if (object_failed) { \
+		TOOLCHAIN_DISABLE_WARNING(TOOLCHAIN_WARNING_SHADOW) \
+		LOG_MODULE_DECLARE(os, CONFIG_KERNEL_LOG_LEVEL); \
+		TOOLCHAIN_ENABLE_WARNING(TOOLCHAIN_WARNING_SHADOW) \
+		do { \
+			Z_LOG_LEVEL_ALL_CHECK_BREAK(LOG_LEVEL_ERR, 0, \
+					    Z_LOG_CURRENT_DATA()); \
+			z_syscall_object_error(__func__); \
+		} while (false); \
+	} \
+	object_failed; })
 
 /**
  * @brief Runtime check driver object pointer for presence of operation
