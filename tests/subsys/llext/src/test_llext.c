@@ -422,6 +422,45 @@ ZTEST(llext, test_inspect)
 	llext_unload(&ext);
 }
 
+#if defined(CONFIG_LLEXT_HEAP_K_HEAP) && !defined(CONFIG_HARVARD) && \
+	!defined(CONFIG_LLEXT_HEAP_DYNAMIC)
+static int header_read_failure(struct llext_loader *ldr, void *buf, size_t len)
+{
+	struct llext_buf_loader *source = CONTAINER_OF(ldr, struct llext_buf_loader, loader);
+
+	if (source->pos) {
+		return -EIO;
+	}
+	return llext_buf_read(ldr, buf, len);
+}
+
+ZTEST(llext, test_failed_section_read_releases_memory)
+{
+	elf_ehdr_t header;
+
+	memcpy(&header, inspect_ext, sizeof(header));
+	header.e_shoff = sizeof(header);
+	/* One section table fits, but retaining it leaves too little room for
+	 * another table and its map. Two retries detect a leak without a soak.
+	 */
+	header.e_shnum = KB(CONFIG_LLEXT_HEAP_SIZE) / 2 / sizeof(elf_shdr_t);
+
+	for (int attempt = 0; attempt < 3; attempt++) {
+		struct llext_buf_loader source =
+			LLEXT_TEMPORARY_BUF_LOADER((const uint8_t *)&header, sizeof(header));
+		struct llext_load_param parameters = LLEXT_LOAD_PARAM_DEFAULT;
+		struct llext *ext = NULL;
+
+		source.loader.read = header_read_failure;
+		source.loader.peek = NULL;
+		parameters.keep_section_info = attempt == 1;
+		zassert_equal(llext_load(&source.loader, "read_failure", &ext, &parameters),
+			      -EIO, "Attempt %d must reach the same read error", attempt);
+		zassert_is_null(ext);
+	}
+}
+#endif
+
 #ifndef CONFIG_LLEXT_TYPE_ELF_OBJECT
 static LLEXT_CONST uint8_t multi_file_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "multi_file.inc"

@@ -914,6 +914,11 @@ out:
 		 * such as regions and exported symbols.
 		 */
 		llext_free_regions(ext);
+		if (ext->sect_hdrs_on_heap) {
+			llext_free_metadata(ext->sect_hdrs);
+			ext->sect_hdrs = NULL;
+			ext->sect_hdrs_on_heap = false;
+		}
 		llext_free_metadata(ext->exp_tab.syms);
 		ext->exp_tab.sym_cnt = 0;
 		ext->exp_tab.syms = NULL;
