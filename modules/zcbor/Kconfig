@@ -48,4 +48,14 @@ config ZCBOR_MAX_STR_LEN
 	  This can be manually used if no other value is readily available, but
 	  using this is discouraged.
 
+config ZCBOR_MAX_RECURSION_DEPTH
+	int "Maximum nesting when skipping CBOR values"
+	default 0
+	range 0 65535
+	help
+	  Bound recursive map/list skipping, including unknown values in unordered
+	  maps. Choose this from the processing thread's stack budget. This does
+	  not use or follow the decoder's state-backup count. Zero preserves the
+	  library's unbounded default.
+
 endif # ZCBOR
