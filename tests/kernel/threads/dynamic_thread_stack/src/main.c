@@ -5,6 +5,9 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/internal/syscall_handler.h>
+#include <zephyr/sys/mem_stats.h>
+#include <zephyr/sys/sys_heap.h>
 #include <zephyr/ztest.h>
 
 #define TIMEOUT_MS 500
@@ -20,6 +23,55 @@
 #define MAX_HEAP_STACKS (POOL_SIZE / STACK_OBJ_SIZE)
 
 K_HEAP_DEFINE(stack_heap, POOL_SIZE);
+
+#if defined(CONFIG_ARM_MPU) && defined(CONFIG_HW_STACK_PROTECTION) && \
+	defined(CONFIG_MPU_STACK_GUARD) && defined(CONFIG_USERSPACE)
+#define GUARDED_SMALL_SIZE 2048
+#define GUARDED_LARGE_SIZE 12288
+K_HEAP_DEFINE(guarded_stack_heap, 65536);
+K_SEM_DEFINE(guarded_ready, 0, 2);
+K_SEM_DEFINE(guarded_gate, 0, 2);
+
+ZTEST_DMEM static struct guarded_case {
+	char *priv;
+	char *metadata;
+	bool checked;
+} guarded_cases[2];
+
+static void guarded_entry(void *arg1, void *arg2, void *arg3)
+{
+	struct guarded_case *test_case = arg1;
+	char own_buffer[CONFIG_THREAD_MAX_NAME_LEN];
+
+	ARG_UNUSED(arg2);
+	ARG_UNUSED(arg3);
+
+	/* These calls also exercise the privileged SVC stack before the MPU checks. */
+	k_sem_give(&guarded_ready);
+	zassert_ok(k_sem_take(&guarded_gate, K_FOREVER));
+	zassert_ok(k_thread_name_copy(k_current_get(), own_buffer, sizeof(own_buffer)));
+	zassert_equal(k_thread_name_copy(k_current_get(), test_case->priv, 1), -EFAULT);
+	zassert_equal(k_thread_name_copy(k_current_get(), test_case->metadata, 1), -EFAULT);
+	test_case->checked = true;
+}
+
+static void oversized_child_entry(void *arg1, void *arg2, void *arg3)
+{
+	k_thread_create(arg1, arg2, K_THREAD_STACK_LEN(GUARDED_LARGE_SIZE) + 1,
+			guarded_entry, NULL, NULL, NULL, 0, K_USER, K_NO_WAIT);
+	zassert_unreachable("oversized child stack was accepted");
+}
+
+static void metadata_probe_entry(void *arg1, void *arg2, void *arg3)
+{
+	volatile uint8_t byte = *(volatile uint8_t *)arg1;
+
+	ARG_UNUSED(byte);
+	ARG_UNUSED(arg2);
+	ARG_UNUSED(arg3);
+	zassert_unreachable("user read privileged stack metadata");
+}
+#endif
 
 ZTEST_DMEM bool tflag[MAX(CONFIG_DYNAMIC_THREAD_POOL_SIZE, MAX_HEAP_STACKS)];
 
@@ -264,6 +316,82 @@ ZTEST(dynamic_thread_stack, test_dynamic_thread_stack_permission)
 	zassert_ok(k_thread_stack_free(stack[0]));
 	zassert_ok(k_thread_stack_free(stack[1]));
 }
+
+#if defined(CONFIG_ARM_MPU) && defined(CONFIG_HW_STACK_PROTECTION) && \
+	defined(CONFIG_MPU_STACK_GUARD) && defined(CONFIG_USERSPACE)
+ZTEST(dynamic_thread_stack, test_arm_guarded_heap_user_stacks)
+{
+	static struct k_thread threads[3];
+	static struct k_thread oversized_child;
+	k_thread_stack_t *stacks[2];
+	struct sys_memory_stats before, after;
+	const size_t sizes[2] = {GUARDED_SMALL_SIZE, GUARDED_LARGE_SIZE};
+
+	k_thread_heap_assign(k_current_get(), &guarded_stack_heap);
+	zassert_ok(sys_heap_runtime_stats_get(&guarded_stack_heap.heap, &before));
+	zassert_is_null(k_thread_stack_alloc(0, K_USER));
+	zassert_is_null(k_thread_stack_alloc(SIZE_MAX, K_USER));
+	k_thread_access_grant(k_current_get(), &guarded_ready, &guarded_gate);
+
+	for (size_t i = 0; i < 2; i++) {
+		const struct k_object *obj;
+
+		stacks[i] = k_thread_stack_alloc(sizes[i], K_USER);
+		zassert_not_null(stacks[i]);
+		zassert_equal((uintptr_t)stacks[i] % K_THREAD_STACK_LEN(sizes[i]), 0);
+		obj = k_object_find(stacks[i]);
+		zassert_not_null(obj);
+		guarded_cases[i].priv = (char *)obj->data.stack_data->priv;
+		guarded_cases[i].metadata = (char *)obj->data.stack_data;
+		guarded_cases[i].checked = false;
+		k_thread_create(&threads[i], stacks[i], sizes[i], guarded_entry,
+				&guarded_cases[i], NULL, NULL, 0,
+				K_USER | K_INHERIT_PERMS, K_FOREVER);
+	}
+
+	/* A suspended thread owns its stack even before its first instruction. */
+	zassert_equal(k_thread_stack_free(stacks[0]), -EBUSY);
+	k_thread_start(&threads[0]);
+	k_thread_start(&threads[1]);
+	zassert_ok(k_sem_take(&guarded_ready, K_MSEC(TIMEOUT_MS)));
+	zassert_ok(k_sem_take(&guarded_ready, K_MSEC(TIMEOUT_MS)));
+	k_sem_give(&guarded_gate);
+	k_sem_give(&guarded_gate);
+	for (size_t i = 0; i < 2; i++) {
+		zassert_ok(k_thread_join(&threads[i], K_MSEC(TIMEOUT_MS)));
+		zassert_true(guarded_cases[i].checked);
+	}
+
+	/* The user MPU must fault on a real load, not just deny a syscall buffer. */
+	k_thread_create(&threads[0], stacks[0], GUARDED_SMALL_SIZE, metadata_probe_entry,
+			guarded_cases[0].metadata, NULL, NULL, 0, K_USER, K_FOREVER);
+	set_fault(K_ERR_CPU_EXCEPTION);
+	k_thread_start(&threads[0]);
+	zassert_ok(k_thread_join(&threads[0], K_MSEC(TIMEOUT_MS)));
+	zassert_false(expect_fault);
+	zassert_ok(k_thread_stack_free(stacks[0]));
+	zassert_ok(k_thread_stack_free(stacks[1]));
+
+	/* A user-created child must not consume the adjacent privileged storage. */
+	stacks[0] = k_thread_stack_alloc(GUARDED_SMALL_SIZE, K_USER);
+	stacks[1] = k_thread_stack_alloc(GUARDED_LARGE_SIZE, K_USER);
+	zassert_not_null(stacks[0]);
+	zassert_not_null(stacks[1]);
+	k_thread_create(&threads[2], stacks[0], GUARDED_SMALL_SIZE,
+			oversized_child_entry, &oversized_child, stacks[1], NULL, 0,
+			K_USER, K_FOREVER);
+	k_thread_access_grant(&threads[2], &oversized_child, stacks[1]);
+	set_fault(K_ERR_KERNEL_OOPS);
+	k_thread_start(&threads[2]);
+	zassert_ok(k_thread_join(&threads[2], K_MSEC(TIMEOUT_MS)));
+	zassert_false(expect_fault);
+	zassert_ok(k_thread_stack_free(stacks[0]));
+	zassert_ok(k_thread_stack_free(stacks[1]));
+	zassert_ok(sys_heap_runtime_stats_get(&guarded_stack_heap.heap, &after));
+	zassert_equal(after.free_bytes, before.free_bytes);
+	k_thread_heap_assign(k_current_get(), &stack_heap);
+}
+#endif
 
 static void *dynamic_thread_stack_setup(void)
 {

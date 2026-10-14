@@ -63,19 +63,19 @@ void z_syscall_object_error(const char *syscall)
 static struct k_spinlock lists_lock;       /* kobj dlist */
 
 #ifdef CONFIG_GEN_PRIV_STACKS
-/* On ARM & ARC MPU & RISC-V PMP we may have two different alignment requirement
+/* On ARC MPU & RISC-V PMP we may have two different alignment requirements
  * when dynamically allocating thread stacks, one for the privileged
  * stack and other for the user stack, so we need to account the
  * worst alignment scenario and reserve space for that.
  */
-#if defined(CONFIG_ARM_MPU) || defined(CONFIG_ARC_MPU) || defined(CONFIG_RISCV_PMP)
+#if defined(CONFIG_ARC_MPU) || defined(CONFIG_RISCV_PMP)
 #define STACK_ELEMENT_DATA_SIZE(size) \
 	(sizeof(struct z_stack_data) + CONFIG_PRIVILEGED_STACK_SIZE + \
 	Z_THREAD_STACK_OBJ_ALIGN(size) + K_THREAD_STACK_LEN(size))
 #else
 #define STACK_ELEMENT_DATA_SIZE(size) (sizeof(struct z_stack_data) + \
 	K_THREAD_STACK_LEN(size))
-#endif /* CONFIG_ARM_MPU || CONFIG_ARC_MPU || CONFIG_RISCV_PMP */
+#endif /* CONFIG_ARC_MPU || CONFIG_RISCV_PMP */
 #else
 #define STACK_ELEMENT_DATA_SIZE(size) K_THREAD_STACK_LEN(size)
 #endif /* CONFIG_GEN_PRIV_STACKS */
@@ -366,15 +366,39 @@ static struct k_object *dynamic_object_create(enum k_objects otype, size_t align
 
 	if (otype == K_OBJ_THREAD_STACK_ELEMENT) {
 		size_t adjusted_size;
+		size_t stack_align;
 
-		if (size == 0) {
+		/* Leave room for stack rounding before evaluating architecture macros. */
+		if (size == 0 || size > SIZE_MAX / 2 - K_THREAD_STACK_RESERVED) {
 			k_free(dyn);
 			return NULL;
 		}
 
+		stack_align = MAX(DYN_OBJ_DATA_ALIGN_K_THREAD_STACK,
+				  Z_THREAD_STACK_OBJ_ALIGN(size));
+#if defined(CONFIG_ARM_MPU) && defined(CONFIG_GEN_PRIV_STACKS)
+		/* Align the allocation itself to the MPU region. Place the privilege
+		 * stack and its guard after it, as for generated privilege stacks.
+		 */
+		size_t priv_offset = ROUND_UP(K_THREAD_STACK_LEN(size),
+					     MAX(ARCH_STACK_PTR_ALIGN, Z_MPU_GUARD_ALIGN));
+		size_t priv_size = ROUND_UP(CONFIG_PRIVILEGED_STACK_SIZE + Z_MPU_GUARD_ALIGN,
+					   ARCH_STACK_PTR_ALIGN);
+
+		if (size_add_overflow(priv_offset, priv_size + sizeof(struct z_stack_data),
+				      &adjusted_size)) {
+			k_free(dyn);
+			return NULL;
+		}
+#else
 		adjusted_size = STACK_ELEMENT_DATA_SIZE(size);
-		dyn->data = z_thread_aligned_alloc(DYN_OBJ_DATA_ALIGN_K_THREAD_STACK,
-						     adjusted_size);
+		if (adjusted_size < K_THREAD_STACK_LEN(size) ||
+		    adjusted_size < Z_THREAD_STACK_OBJ_ALIGN(size)) {
+			k_free(dyn);
+			return NULL;
+		}
+#endif
+		dyn->data = z_thread_aligned_alloc(stack_align, adjusted_size);
 		if (dyn->data == NULL) {
 			k_free(dyn);
 			return NULL;
@@ -396,13 +420,16 @@ static struct k_object *dynamic_object_create(enum k_objects otype, size_t align
 #ifdef CONFIG_GEN_PRIV_STACKS
 		struct z_stack_data *stack_data = (struct z_stack_data *)
 			((uint8_t *)dyn->data + adjusted_size - sizeof(*stack_data));
-#if defined(CONFIG_ARM_MPU) || defined(CONFIG_ARC_MPU) || defined(CONFIG_RISCV_PMP)
+#if defined(CONFIG_ARM_MPU)
+		stack_data->priv = (uint8_t *)dyn->data + priv_offset;
+#elif defined(CONFIG_ARC_MPU) || defined(CONFIG_RISCV_PMP)
 		stack_data->priv = (void *)ROUND_UP(((uint8_t *)dyn->data + size),
 			  Z_THREAD_STACK_OBJ_ALIGN(size));
 #else
 		stack_data->priv = (uint8_t *)dyn->data;
 #endif /* CONFIG_ARM_MPU || CONFIG_ARC_MPU || CONFIG_RISCV_PMP */
-		stack_data->size = adjusted_size;
+		/* Privileged storage and metadata must never become a user stack. */
+		stack_data->size = K_THREAD_STACK_LEN(size);
 		dyn->kobj.data.stack_data = stack_data;
 		dyn->kobj.name = dyn->data;
 #else

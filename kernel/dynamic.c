@@ -105,10 +105,16 @@ static inline k_thread_stack_t *z_vrfy_k_thread_stack_alloc(size_t size, int fla
 static void dyn_cb(const struct k_thread *thread, void *user_data)
 {
 	struct dyn_cb_data *const data = (struct dyn_cb_data *)user_data;
+#ifdef CONFIG_USERSPACE
+	k_thread_stack_t *stack = thread->stack_obj;
+#else
+	k_thread_stack_t *stack = (k_thread_stack_t *)thread->stack_info.start;
+#endif
 
-	if (data->stack == (k_thread_stack_t *)thread->stack_info.start) {
+	/* The writable stack start can exclude an architecture guard. */
+	if (data->stack == stack) {
 		__ASSERT(data->tid == NULL, "stack %p is associated with more than one thread!",
-			 (void *)thread->stack_info.start);
+			 (void *)stack);
 		data->tid = (k_tid_t)thread;
 	}
 }

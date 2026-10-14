@@ -310,9 +310,9 @@ void z_arm_configure_dynamic_mpu_regions(struct k_thread *thread)
 		 */
 		guard_start = thread->arch.priv_stack_start - guard_size;
 
-		__ASSERT((uintptr_t)&z_priv_stacks_ram_start <= guard_start,
-		"Guard start: (0x%lx) below privilege stacks boundary: (%p)",
-		guard_start, z_priv_stacks_ram_start);
+		/* Dynamic stacks are not in the generated privilege-stack section. */
+		__ASSERT(guard_start == thread->arch.priv_stack_end - CONFIG_PRIVILEGED_STACK_SIZE,
+			 "Guard start: (0x%lx) outside the thread's privilege stack", guard_start);
 	} else
 #endif /* CONFIG_USERSPACE */
 	{
