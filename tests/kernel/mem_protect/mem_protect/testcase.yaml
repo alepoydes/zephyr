@@ -15,6 +15,14 @@ tests:
     extra_args:
       - CONFIG_TEST_HW_STACK_PROTECTION=n
       - CONFIG_MINIMAL_LIBC=y
+  kernel.memory_protection.early_user_stacks:
+    filter: CONFIG_CPU_CORTEX_M and CONFIG_MPU_REQUIRES_POWER_OF_TWO_ALIGNMENT and not CONFIG_CMAKE_LINKER_GENERATOR
+    integration_platforms:
+      - mps2/an385
+    extra_configs:
+      - CONFIG_USERSPACE_STACKS_EARLY=y
+      - CONFIG_TEST_HW_STACK_PROTECTION=n
+      - CONFIG_MINIMAL_LIBC=y
   kernel.memory_protection.gap_filling.arc:
     filter: CONFIG_ARCH_HAS_USERSPACE and CONFIG_MPU_REQUIRES_NON_OVERLAPPING_REGIONS
     arch_allow: arc

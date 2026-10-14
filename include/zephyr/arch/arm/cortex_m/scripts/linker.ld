@@ -300,6 +300,15 @@ GROUP_END(ITCM)
  */
 #include <snippets-ram-sections.ld>
 
+#ifdef CONFIG_USERSPACE_STACKS_EARLY
+    SECTION_DATA_PROLOGUE(user_stacks,(NOLOAD),)
+	{
+		z_user_stacks_start = .;
+		*(.user_stacks*)
+		z_user_stacks_end = .;
+	} GROUP_DATA_LINK_IN(RAMABLE_REGION, RAMABLE_REGION)
+#endif
+
 #if defined(CONFIG_USERSPACE)
 #define APP_SHARED_ALIGN . = ALIGN(_region_min_align);
 #define SMEM_PARTITION_ALIGN MPU_ALIGN

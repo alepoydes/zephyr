@@ -740,13 +740,17 @@ header = """%compare-lengths
 %language=ANSI-C
 %global-table
 %struct-type
+%readonly-tables
 %{
 #include <zephyr/kernel.h>
 #include <zephyr/toolchain.h>
 #include <zephyr/internal/syscall_handler.h>
 #include <string.h>
 %}
-struct k_object;
+struct k_object_hash {
+    const char *name;
+    struct k_object *object;
+};
 """
 
 # Different versions of gperf have different prototypes for the lookup
@@ -756,17 +760,17 @@ struct k_object;
 footer = """%%
 struct k_object *z_object_gperf_find(const void *obj)
 {
-    return z_object_lookup((const char *)obj, sizeof(void *));
+    const struct k_object_hash *entry = z_object_lookup((const char *)obj, sizeof(void *));
+
+    return entry != NULL ? entry->object : NULL;
 }
 
 void z_object_gperf_wordlist_foreach(_wordlist_cb_func_t func, void *context)
 {
     int i;
 
-    for (i = MIN_HASH_VALUE; i <= MAX_HASH_VALUE; i++) {
-        if (wordlist[i].name != NULL) {
-            func(&wordlist[i], context);
-        }
+    for (i = 0; i < ARRAY_SIZE(objects); i++) {
+        func(&objects[i], context);
     }
 }
 
@@ -837,7 +841,6 @@ def write_gperf_table(fp, syms, objs, little_endian, static_begin, static_end):
     else:
         metadata_names["K_OBJ_THREAD_STACK_ELEMENT"] = "stack_size"
 
-    fp.write("%%\n")
     # Setup variables for mapping thread indexes
     thread_max_bytes = syms["CONFIG_MAX_THREAD_BYTES"]
     thread_idx_map = {}
@@ -845,6 +848,9 @@ def write_gperf_table(fp, syms, objs, little_endian, static_begin, static_end):
     for i in range(0, thread_max_bytes):
         thread_idx_map[i] = 0xFF
 
+    # Mutable permissions and metadata need one RAM entry per object, independent
+    # of the holes in gperf's address-dependent lookup table.
+    fp.write("static struct k_object objects[] = {\n")
     for obj_addr, ko in objs.items():
         obj_type = ko.type_name
         # pre-initialized objects fall within this memory range, they are
@@ -852,22 +858,6 @@ def write_gperf_table(fp, syms, objs, little_endian, static_begin, static_end):
         # at boot during some PRE_KERNEL_* phase
         initialized = static_begin <= obj_addr < static_end
         is_driver = obj_type.startswith("K_OBJ_DRIVER_")
-
-        if "CONFIG_64BIT" in syms:
-            format_code = "Q"
-        else:
-            format_code = "I"
-
-        if little_endian:
-            endian = "<"
-        else:
-            endian = ">"
-
-        byte_str = struct.pack(endian + format_code, obj_addr)
-        fp.write("\"")
-        for byte in byte_str:
-            val = f"\\x{byte:02x}"
-            fp.write(val)
 
         flags = "0"
         if initialized:
@@ -877,12 +867,21 @@ def write_gperf_table(fp, syms, objs, little_endian, static_begin, static_end):
 
         tname = metadata_names.get(ko.type_name, "unused")
 
-        fp.write(f"\", {{0}}, {obj_type}, {flags}, {{ .{tname} = {ko.data} }}\n")
+        fp.write(f"    {{ (void *)0x{obj_addr:x}, {{0}}, {obj_type}, {flags}, "
+                 f"{{ .{tname} = {ko.data} }} }},\n")
 
         if obj_type == "K_OBJ_THREAD":
             idx = math.floor(ko.data / 8)
             bit = ko.data % 8
             thread_idx_map[idx] = thread_idx_map[idx] & ~(2**bit)
+
+    fp.write("};\n%%\n")
+    format_code = "Q" if "CONFIG_64BIT" in syms else "I"
+    endian = "<" if little_endian else ">"
+    for index, obj_addr in enumerate(objs):
+        byte_str = struct.pack(endian + format_code, obj_addr)
+        key = "".join(f"\\x{byte:02x}" for byte in byte_str)
+        fp.write(f'"{key}", &objects[{index}]\n')
 
     fp.write(footer)
 

@@ -1382,6 +1382,49 @@ ZTEST(mem_protect_kobj, test_kobject_perm_error)
 }
 
 extern const char *otype_to_str(enum k_objects otype);
+extern void z_object_gperf_wordlist_foreach(_wordlist_cb_func_t func, void *context);
+
+struct static_object_check {
+	struct k_object *target;
+	size_t matches;
+	size_t sem_count;
+	size_t total;
+};
+
+static void count_static_object(struct k_object *ko, void *context)
+{
+	struct static_object_check *check = context;
+
+	if (ko == check->target) {
+		check->matches++;
+	}
+}
+
+static void check_static_object(struct k_object *ko, void *context)
+{
+	struct static_object_check *check = context;
+
+	zassert_not_null(ko->name);
+	zassert_equal_ptr(k_object_find(ko->name), ko);
+	check->target = ko;
+	check->matches = 0;
+	/* The generated static iterator has no dynamic-object list lock. */
+	z_object_gperf_wordlist_foreach(count_static_object, check);
+	zassert_equal(check->matches, 1, "static object visited more than once");
+	check->sem_count += ko->name == &kobject_sem;
+	check->total++;
+}
+
+ZTEST(mem_protect_kobj, test_static_object_lookup_and_foreach)
+{
+	struct static_object_check check = {0};
+	int unknown;
+
+	z_object_gperf_wordlist_foreach(check_static_object, &check);
+	zassert_true(check.total > 0);
+	zassert_equal(check.sem_count, 1, "known semaphore not visited exactly once");
+	zassert_is_null(k_object_find(&unknown));
+}
 
 /**
  * @brief Test get all kernel object list

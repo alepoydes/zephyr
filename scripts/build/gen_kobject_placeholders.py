@@ -64,6 +64,7 @@ def generate_linker_headers(obj):
             "name": "rodata",
             "define_prefix": "RODATA",
             "exists": False,
+            "multiplier": int(args.rodatapct) + 100,
             "extra_bytes": args.rodata,
         },
         ".priv_stacks.noinit": {
@@ -122,6 +123,8 @@ def parse_args():
         help="Fixed DATA region size in bytes; zero uses --datapct",
     )
     parser.add_argument("--rodata", required=True, help="Extra bytes to reserve for RODATA region")
+    parser.add_argument("--rodatapct", default=0, type=int,
+                        help="Extra percentage to reserve for RODATA region")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose messages")
     args = parser.parse_args()
     if "VERBOSE" in os.environ:

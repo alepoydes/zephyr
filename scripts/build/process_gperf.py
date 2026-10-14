@@ -7,13 +7,11 @@
 """
 gperf C file post-processor
 
-We use gperf to build up a perfect hashtable of pointer values. The way gperf
-does this is to create a table 'wordlist' indexed by a string representation
-of a pointer address, and then doing memcmp() on a string passed in for
-comparison
+We use gperf to build a read-only perfect hashtable of object addresses and
+pointers to their mutable metadata. gperf represents each object address as
+a binary string and compares it with memcmp().
 
-We are exclusively working with 4-byte pointer values. This script adjusts
-the generated code so that we work with pointers directly and not strings.
+This script adjusts the generated code to work with pointers instead of strings.
 This saves a considerable amount of space.
 """
 
@@ -102,7 +100,8 @@ def process_line(line, fp):
 
     # Suppress a compiler warning since this table is no longer necessary
     line = re.sub(
-        r'static unsigned char lengthtable', r'static unsigned char __unused lengthtable', line
+        r'static (const )?unsigned char lengthtable',
+        r'static \1unsigned char __unused lengthtable', line
     )
 
     # drop all use of register keyword, let compiler figure that out,
