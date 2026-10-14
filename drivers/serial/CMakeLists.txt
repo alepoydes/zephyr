@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
-zephyr_syscall_header(${ZEPHYR_BASE}/include/zephyr/drivers/uart.h)
+if(NOT CONFIG_USERSPACE OR CONFIG_UART_USERSPACE)
+  zephyr_syscall_header(${ZEPHYR_BASE}/include/zephyr/drivers/uart.h)
+endif()
 
 zephyr_library()
 
@@ -113,7 +115,7 @@ zephyr_library_sources_ifdef(CONFIG_UART_XLNX_UARTLITE uart_xlnx_uartlite.c)
 zephyr_library_sources_ifdef(CONFIG_UART_XMC4XXX uart_xmc4xxx.c)
 zephyr_library_sources_ifdef(CONFIG_USART_GD32 usart_gd32.c)
 zephyr_library_sources_ifdef(CONFIG_USART_SAM usart_sam.c)
-zephyr_library_sources_ifdef(CONFIG_USERSPACE uart_handlers.c)
+zephyr_library_sources_ifdef(CONFIG_UART_USERSPACE uart_handlers.c)
 # zephyr-keep-sorted-stop
 
 if(CONFIG_UART_NATIVE_PTY)

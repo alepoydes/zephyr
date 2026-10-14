@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+
+common:
+  tags:
+    - drivers
+    - uart
+    - userspace
+  platform_allow:
+    - mps2/an385
+  harness: ztest
+  filter: CONFIG_ARCH_HAS_USERSPACE
+
+tests:
+  drivers.uart.userspace_api.default_enabled:
+  drivers.uart.userspace_api.disabled:
+    extra_configs:
+      - CONFIG_UART_USERSPACE=n
+    extra_args: EXTRA_CPPFLAGS=-DTEST_UART_USERSPACE_DISABLED=1
+    ignore_faults: true

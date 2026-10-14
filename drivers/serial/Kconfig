@@ -10,6 +10,16 @@ menuconfig SERIAL
 
 if SERIAL
 
+config UART_USERSPACE
+	bool "UART access from user mode"
+	depends on USERSPACE
+	default y
+	help
+	  Build system call handlers for direct UART access from user threads.
+	  Device permissions are still required. Disable this when UART devices
+	  are owned exclusively by supervisor services to omit the handlers and
+	  their dispatch entries. Supervisor UART APIs remain available.
+
 comment "Capabilities"
 
 config SERIAL_HAS_DRIVER
