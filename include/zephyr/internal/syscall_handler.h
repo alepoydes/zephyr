@@ -410,6 +410,9 @@ int k_usermode_string_copy(char *dst, const char *src, size_t maxlen);
 #define K_SYSCALL_MEMORY_SIZE_CHECK(ptr, size) \
 	(((uintptr_t)(ptr) + (size)) >= (uintptr_t)(ptr))
 
+/* Keep cold diagnostic formatting out of each verifier's successful path. */
+void z_syscall_memory_error(const char *syscall, const void *ptr, size_t size, bool write);
+
 /**
  * @brief Runtime check that a user thread has read and/or write permission to
  *        a memory area
@@ -428,14 +431,20 @@ int k_usermode_string_copy(char *dst, const char *src, size_t maxlen);
  * @note This is an internal API. Do not use unless you are extending
  *       functionality in the Zephyr tree.
  */
-#define K_SYSCALL_MEMORY(ptr, size, write) \
-	K_SYSCALL_VERIFY_MSG(K_SYSCALL_MEMORY_SIZE_CHECK(ptr, size) \
-			     && !Z_DETECT_POINTER_OVERFLOW(ptr, size) \
-			     && (arch_buffer_validate((void *)(ptr), (size), (write)) \
-			     == 0), \
-			     "Memory region %p (size %zu) %s access denied", \
-			     (void *)(ptr), (size_t)(size), \
-			     (write) ? "write" : "read")
+#define K_SYSCALL_MEMORY(ptr, size, write) ({ \
+	bool memory_failed = !(K_SYSCALL_MEMORY_SIZE_CHECK(ptr, size) \
+			      && !Z_DETECT_POINTER_OVERFLOW(ptr, size) \
+			      && (arch_buffer_validate((void *)(ptr), (size), (write)) == 0)); \
+	if (memory_failed) { \
+		TOOLCHAIN_DISABLE_WARNING(TOOLCHAIN_WARNING_SHADOW) \
+		LOG_MODULE_DECLARE(os, CONFIG_KERNEL_LOG_LEVEL); \
+		TOOLCHAIN_ENABLE_WARNING(TOOLCHAIN_WARNING_SHADOW) \
+		do { \
+			Z_LOG_LEVEL_ALL_CHECK_BREAK(LOG_LEVEL_ERR, 0, Z_LOG_CURRENT_DATA()); \
+			z_syscall_memory_error(__func__, (void *)(ptr), (size_t)(size), (write)); \
+		} while (false); \
+	} \
+	memory_failed; })
 
 /**
  * @brief Runtime check that a user thread has read permission to a memory area

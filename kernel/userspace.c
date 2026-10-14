@@ -40,6 +40,12 @@ K_APPMEM_PARTITION_DEFINE(k_mbedtls_partition);
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(os, CONFIG_KERNEL_LOG_LEVEL);
 
+void z_syscall_memory_error(const char *syscall, const void *ptr, size_t size, bool write)
+{
+	LOG_ERR("syscall %s failed check: Memory region %p (size %zu) %s access denied",
+		syscall, ptr, size, write ? "write" : "read");
+}
+
 /* The originally synchronization strategy made heavy use of recursive
  * irq_locking, which ports poorly to spinlocks which are
  * non-recursive.  Rather than try to redesign as part of
