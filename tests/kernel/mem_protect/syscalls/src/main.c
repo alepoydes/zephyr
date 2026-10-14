@@ -485,6 +485,138 @@ static inline bool z_vrfy_syscall_context(void)
 }
 #include <zephyr/syscalls/syscall_context_mrsh.c>
 
+/* The timer observes the user thread from IRQ context, on both sides of the
+ * syscall return. The user thread does not make another syscall while waiting
+ * for the second observation.
+ */
+K_SEM_DEFINE(frame_entered, 0, 1);
+K_SEM_DEFINE(frame_resume, 0, 1);
+#if !defined(CONFIG_SMP)
+static struct k_thread frame_thread;
+static K_THREAD_STACK_DEFINE(frame_stack, STACK_SZ);
+K_SEM_DEFINE(frame_irq_seen, 0, 1);
+K_SEM_DEFINE(frame_return_seen, 0, 1);
+#endif
+static void *frame_at_entry;
+#if !defined(CONFIG_SMP)
+static bool frame_irq_context_ok;
+static bool frame_irq_switch_ok;
+static bool frame_cleared_on_return;
+static bool frame_first_irq;
+static bool frame_return_irq;
+ZTEST_BMEM static volatile bool frame_user_returned;
+ZTEST_BMEM static volatile bool frame_user_release;
+ZTEST_BMEM static volatile int frame_user_result;
+#endif
+
+int z_impl_syscall_frame_switch(void)
+{
+	void *frame = k_current_get()->syscall_frame;
+
+	if ((frame == NULL) || !k_is_in_user_syscall()) {
+		return -EINVAL;
+	}
+
+	frame_at_entry = frame;
+	k_sem_give(&frame_entered);
+	if (k_sem_take(&frame_resume, K_SECONDS(3)) != 0) {
+		return -ETIMEDOUT;
+	}
+
+	return ((k_current_get()->syscall_frame == frame) && k_is_in_user_syscall())
+		       ? 0 : -EFAULT;
+}
+
+static inline int z_vrfy_syscall_frame_switch(void)
+{
+	return z_impl_syscall_frame_switch();
+}
+#include <zephyr/syscalls/syscall_frame_switch_mrsh.c>
+
+#if !defined(CONFIG_SMP)
+static void frame_timer_expiry(struct k_timer *timer)
+{
+	ARG_UNUSED(timer);
+
+	if (!frame_first_irq) {
+		frame_first_irq = true;
+		frame_irq_context_ok = !k_is_in_user_syscall();
+		frame_irq_switch_ok = frame_thread.syscall_frame == frame_at_entry;
+		k_sem_give(&frame_irq_seen);
+	}
+
+	if (frame_user_returned && !frame_return_irq) {
+		frame_return_irq = true;
+		frame_cleared_on_return = (frame_thread.syscall_frame == NULL) &&
+					   !k_is_in_user_syscall();
+		frame_user_release = true;
+		k_sem_give(&frame_return_seen);
+	}
+}
+K_TIMER_DEFINE(frame_timer, frame_timer_expiry, NULL);
+
+static void frame_user_thread(void *arg1, void *arg2, void *arg3)
+{
+	ARG_UNUSED(arg1);
+	ARG_UNUSED(arg2);
+	ARG_UNUSED(arg3);
+
+	frame_user_result = syscall_frame_switch();
+	frame_user_returned = true;
+	while (!frame_user_release) {
+		/* Keep execution in user mode until the timer IRQ observes it. */
+	}
+}
+
+ZTEST(syscalls, test_syscall_frame_across_switch_and_irq)
+{
+	int entered, irq, returned, joined;
+
+	frame_at_entry = NULL;
+	frame_irq_context_ok = false;
+	frame_irq_switch_ok = false;
+	frame_cleared_on_return = false;
+	frame_first_irq = false;
+	frame_return_irq = false;
+	frame_user_result = -EINPROGRESS;
+	frame_user_returned = false;
+	frame_user_release = false;
+
+	k_thread_create(&frame_thread, frame_stack, STACK_SZ, frame_user_thread,
+			NULL, NULL, NULL, K_PRIO_PREEMPT(0),
+			K_USER | K_INHERIT_PERMS, K_NO_WAIT);
+	entered = k_sem_take(&frame_entered, K_SECONDS(1));
+	if (entered == 0) {
+		k_timer_start(&frame_timer, K_MSEC(1), K_MSEC(1));
+		irq = k_sem_take(&frame_irq_seen, K_SECONDS(1));
+	} else {
+		irq = -ETIMEDOUT;
+	}
+
+	k_sem_give(&frame_resume);
+	if (irq == 0) {
+		returned = k_sem_take(&frame_return_seen, K_SECONDS(1));
+	} else {
+		returned = -ETIMEDOUT;
+	}
+	k_timer_stop(&frame_timer);
+	frame_user_release = true;
+	joined = k_thread_join(&frame_thread, K_SECONDS(1));
+	if (joined != 0) {
+		k_thread_abort(&frame_thread);
+	}
+
+	zassert_ok(entered, "user did not enter syscall");
+	zassert_ok(irq, "timer IRQ did not observe suspended syscall");
+	zassert_true(frame_irq_context_ok, "IRQ reported user syscall context");
+	zassert_true(frame_irq_switch_ok, "user syscall frame lost on context switch");
+	zassert_ok(returned, "timer IRQ did not observe user-mode return");
+	zassert_true(frame_cleared_on_return, "user syscall frame survived return");
+	zassert_ok(joined, "user thread did not finish");
+	zassert_ok(frame_user_result, "syscall frame changed while suspended");
+}
+#endif /* !CONFIG_SMP */
+
 void test_syscall_context_user(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
@@ -525,3 +657,10 @@ void *syscalls_setup(void)
 
 ZTEST_SUITE(syscalls, NULL, syscalls_setup, NULL, NULL, NULL);
 ZTEST_SUITE(syscalls_extended, NULL, syscalls_setup, NULL, NULL, NULL);
+
+#ifdef TEST_SYSCALL_BASIC_ONLY
+void test_main(void)
+{
+	ztest_run_test_suite(syscalls, false, 1, 1, NULL);
+}
+#endif

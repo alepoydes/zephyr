@@ -39,6 +39,7 @@ config ARM
 	select GEN_PRIV_STACKS
 	select ARCH_HAS_THREAD_LOCAL_STORAGE if CPU_AARCH32_CORTEX_R || CPU_CORTEX_M || CPU_AARCH32_CORTEX_A
 	select BARRIER_OPERATIONS_ARCH
+	select ARCH_HAS_SYSCALL_FRAME_TRACKING if ARMV7_M_ARMV8_M_MAINLINE && USERSPACE
 	help
 	  ARM architecture
 
@@ -318,6 +319,15 @@ config HW_STACK_PROTECTION
 	  Note that this does not necessarily prevent corruption and assertions
 	  about the overall system state when a fault is triggered cannot be
 	  made.
+
+config ARCH_HAS_SYSCALL_FRAME_TRACKING
+	bool
+	help
+	  The architecture sets the current thread's syscall_frame before calling
+	  a syscall marshaller and clears it after the call returns. Generated
+	  marshallers then omit this otherwise repeated bookkeeping. The frame
+	  must remain valid throughout argument verification, blocking calls and
+	  return-value copying, including error paths.
 
 config USERSPACE
 	bool "User mode threads"

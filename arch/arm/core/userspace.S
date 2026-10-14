@@ -430,8 +430,26 @@ dispatch_syscall:
     add ip, r6
     ldr ip, [ip]	/* load table address */
 
+#if defined(CONFIG_ARCH_HAS_SYSCALL_FRAME_TRACKING)
+    /* r6's call ID is consumed. Keep this thread's frame owner in the
+     * callee-saved register across the handler, including context switches.
+     * The seventh argument at sp[8] is the same frame passed to the marshaller.
+     */
+    ldr r6, =_kernel
+    ldr r6, [r6, #_kernel_offset_to_current]
+    ldr lr, [sp, #8]
+    str lr, [r6, #_thread_offset_to_syscall_frame]
+#endif
+
     /* execute function from dispatch table */
     blx ip
+
+#if defined(CONFIG_ARCH_HAS_SYSCALL_FRAME_TRACKING)
+    /* Preserve r0's return value; do not expose the thread pointer in r6. */
+    movs r1, #0
+    str r1, [r6, #_thread_offset_to_syscall_frame]
+    movs r6, #0
+#endif
 
     /* restore LR */
     ldr lr, [sp,#16]

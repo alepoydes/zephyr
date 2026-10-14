@@ -53,6 +53,9 @@ GEN_OFFSET_SYM(_thread_arch_t, mode_exc_return);
 #if defined(CONFIG_USERSPACE)
 GEN_OFFSET_SYM(_thread_arch_t, priv_stack_start);
 GEN_OFFSET_SYM(_thread_arch_t, priv_stack_end);
+#if defined(CONFIG_ARCH_HAS_SYSCALL_FRAME_TRACKING)
+GEN_OFFSET_SYM(_thread_t, syscall_frame);
+#endif
 
 #if defined(CONFIG_CPU_AARCH32_CORTEX_R)
 GEN_OFFSET_SYM(_thread_arch_t, sp_usr);

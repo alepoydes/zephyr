@@ -372,7 +372,11 @@ def marshall_defs(func_name, func_type, args):
     else:
         mrsh += "\t\t" + "uintptr_t arg3, uintptr_t arg4, void *more, void *ssf)\n"
     mrsh += "{\n"
-    mrsh += "\t" + "_current->syscall_frame = ssf;\n"
+    mrsh += "#ifndef CONFIG_ARCH_HAS_SYSCALL_FRAME_TRACKING\n"
+    mrsh += "\t_current->syscall_frame = ssf;\n"
+    mrsh += "#else\n\t(void) ssf;\n#endif\n"
+    clear_frame = ("#ifndef CONFIG_ARCH_HAS_SYSCALL_FRAME_TRACKING\n"
+                   "\t_current->syscall_frame = NULL;\n#endif\n")
 
     for unused_arg in range(nmrsh, 6):
         mrsh += f"\t(void) arg{unused_arg};\t/* unused */\n"
@@ -402,7 +406,7 @@ def marshall_defs(func_name, func_type, args):
 
     if func_type == "void":
         mrsh += "\t" + f"{vrfy_call};\n"
-        mrsh += "\t" + "_current->syscall_frame = NULL;\n"
+        mrsh += clear_frame
         mrsh += "\t" + "return 0;\n"
     else:
         mrsh += "\t" + f"{func_type} ret = {vrfy_call};\n"
@@ -412,10 +416,10 @@ def marshall_defs(func_name, func_type, args):
             ptr = f"((uint64_t *){rval})"
             mrsh += "\t" + f"K_OOPS(K_SYSCALL_MEMORY_WRITE({ptr}, 8));\n"
             mrsh += "\t" + f"*{ptr} = ret;\n"
-            mrsh += "\t" + "_current->syscall_frame = NULL;\n"
+            mrsh += clear_frame
             mrsh += "\t" + "return 0;\n"
         else:
-            mrsh += "\t" + "_current->syscall_frame = NULL;\n"
+            mrsh += clear_frame
             mrsh += "\t" + "return (uintptr_t) ret;\n"
 
     mrsh += "}\n"

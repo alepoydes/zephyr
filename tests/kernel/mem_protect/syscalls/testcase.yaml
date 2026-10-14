@@ -13,6 +13,9 @@ common:
   ignore_faults: true
   timeout: 180
 tests:
+  kernel.memory_protection.syscalls.frame:
+    platform_allow: mps2/an385
+    extra_args: EXTRA_CPPFLAGS=-DTEST_SYSCALL_BASIC_ONLY=1
   kernel.memory_protection.syscalls.timeslicing:
     extra_configs:
       - CONFIG_TIMESLICING=y

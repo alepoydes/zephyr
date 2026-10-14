@@ -43,6 +43,10 @@
 #endif
 
 #ifdef CONFIG_USERSPACE
+#if defined(CONFIG_ARCH_HAS_SYSCALL_FRAME_TRACKING)
+#define _thread_offset_to_syscall_frame ___thread_t_syscall_frame_OFFSET
+#endif
+
 #define _thread_offset_to_priv_stack_start \
 	(___thread_t_arch_OFFSET + ___thread_arch_t_priv_stack_start_OFFSET)
 
