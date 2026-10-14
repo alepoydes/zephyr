@@ -979,7 +979,7 @@ add_custom_command(
   COMMAND
   ${LEGACY_SYSCALL_LIST_H_ARGS}
   WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  DEPENDS ${syscalls_json}
+  DEPENDS ${syscalls_json} ${ZEPHYR_BASE}/scripts/build/gen_syscalls.py
   )
 
 include(${ZEPHYR_BASE}/cmake/kobj.cmake)
@@ -2427,6 +2427,7 @@ if(CONFIG_LLEXT_EDK)
     COMMAND ${CMAKE_COMMAND}
         -P ${ZEPHYR_BASE}/cmake/llext-edk.cmake
     DEPENDS ${logical_target_for_zephyr_elf} ${syscalls_json} build_info_yaml_saved
+      ${ZEPHYR_BASE}/scripts/build/gen_syscalls.py
     COMMAND_EXPAND_LISTS
   )
   add_custom_target(llext-edk DEPENDS ${llext_edk_file})
