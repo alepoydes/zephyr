@@ -58,5 +58,15 @@
 			reg = <0x7000 0x1000>;
 			status = "disabled";
 		};
+
+		child-count {
+			first-child {};
+			second-child {
+				grandchild {};
+			};
+			disabled-child {
+				status = "disabled";
+			};
+		};
 	};
 };

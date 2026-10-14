@@ -143,4 +143,16 @@ config KCONFIG_VND_PWM_ENABLED_NUM_0
 	int
 	default $(dt_compat_enabled_num,$(DT_COMPAT_VND_PWM))
 
+config KCONFIG_NODE_ENABLED_CHILD_COUNT_2
+	int
+	default $(dt_node_enabled_child_count,/test/child-count)
+
+config KCONFIG_NODE_ENABLED_GRANDCHILD_COUNT_1
+	int
+	default $(dt_node_enabled_child_count,/test/child-count/second-child)
+
+config KCONFIG_NODE_ENABLED_CHILD_COUNT_MISSING_0
+	int
+	default $(dt_node_enabled_child_count,/test/no-such-node)
+
 source "Kconfig.zephyr"

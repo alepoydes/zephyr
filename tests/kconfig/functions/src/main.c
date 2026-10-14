@@ -59,4 +59,11 @@ ZTEST(test_kconfig_functions, test_dt_num_compat_enabled)
 	zassert_equal(CONFIG_KCONFIG_VND_PWM_ENABLED_NUM_0, 0);
 }
 
+ZTEST(test_kconfig_functions, test_dt_node_enabled_child_count)
+{
+	zassert_equal(CONFIG_KCONFIG_NODE_ENABLED_CHILD_COUNT_2, 2);
+	zassert_equal(CONFIG_KCONFIG_NODE_ENABLED_GRANDCHILD_COUNT_1, 1);
+	zassert_equal(CONFIG_KCONFIG_NODE_ENABLED_CHILD_COUNT_MISSING_0, 0);
+}
+
 ZTEST_SUITE(test_kconfig_functions, NULL, NULL, NULL, NULL, NULL);

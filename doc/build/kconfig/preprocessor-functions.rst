@@ -52,6 +52,7 @@ while the ``*_hex`` version returns a hexadecimal value starting with ``0x``.
    $(dt_node_array_prop_hex,<node path>,<prop>,<index>[,<unit>])
    $(dt_node_array_prop_int,<node path>,<prop>,<index>[,<unit>])
    $(dt_node_bool_prop,<node path>,<prop>)
+   $(dt_node_enabled_child_count,<node path>)
    $(dt_node_has_compat,<node path>,<compatible string>)
    $(dt_node_has_prop,<node path>,<prop>)
    $(dt_node_int_prop_hex,<node path>,<prop>[,<unit>])
