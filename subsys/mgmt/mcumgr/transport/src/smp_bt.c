@@ -22,7 +22,7 @@
 #include <errno.h>
 
 #include <mgmt/mcumgr/transport/smp_internal.h>
-#include <mgmt/mcumgr/transport/smp_reassembly.h>
+#include <zephyr/mgmt/mcumgr/transport/smp_reassembly.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(mcumgr_smp, CONFIG_MCUMGR_TRANSPORT_LOG_LEVEL);

@@ -13,7 +13,7 @@
 #include <zephyr/mgmt/mcumgr/smp/smp.h>
 #include <zephyr/mgmt/mcumgr/transport/smp.h>
 
-#include <mgmt/mcumgr/transport/smp_reassembly.h>
+#include <zephyr/mgmt/mcumgr/transport/smp_reassembly.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(mcumgr_smp, CONFIG_MCUMGR_TRANSPORT_LOG_LEVEL);

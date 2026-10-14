@@ -10,7 +10,7 @@
 #include <zephyr/mgmt/mcumgr/mgmt/mgmt.h>
 #include <zephyr/mgmt/mcumgr/smp/smp.h>
 #include <zephyr/mgmt/mcumgr/transport/smp.h>
-#include "mgmt/mcumgr/transport/smp_reassembly.h"
+#include <zephyr/mgmt/mcumgr/transport/smp_reassembly.h>
 #include "mgmt/mcumgr/transport/smp_internal.h"
 
 #define TRANSPORT_NETBUF_SIZE CONFIG_MCUMGR_TRANSPORT_NETBUF_SIZE

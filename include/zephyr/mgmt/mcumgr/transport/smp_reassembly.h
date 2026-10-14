@@ -4,14 +4,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_INCLUDE_MGMT_SMP_REASSEMBLY_H_
-#define ZEPHYR_INCLUDE_MGMT_SMP_REASSEMBLY_H_
+#ifndef ZEPHYR_INCLUDE_MGMT_MCUMGR_TRANSPORT_SMP_REASSEMBLY_H_
+#define ZEPHYR_INCLUDE_MGMT_MCUMGR_TRANSPORT_SMP_REASSEMBLY_H_
+
+#include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 struct smp_transport;
+
+/* A reassembly context belongs to one transport and must be accessed serially.
+ * The caller must also serialize collect, complete, and drop with disconnect
+ * cleanup. There is no locking inside these functions.
+ */
 
 /**
  * Initialize re-assembly context within smp_transport
@@ -36,7 +44,7 @@ void smp_reassembly_init(struct smp_transport *smpt);
  * @param buf	buffer with data to add;
  * @param len	length of data to add;
  *
- * Note: For efficiency there are ot NULL checks on @p smpt and @p buf pointers and it is caller's
+ * Note: For efficiency there are no NULL checks on @p smpt and @p buf pointers and it is caller's
  * responsibility to make sure these are not NULL.  Also @p len should not be 0 as there is no
  * point in passing an empty fragment for re-assembly.
  *
@@ -71,7 +79,9 @@ int smp_reassembly_expected(const struct smp_transport *smpt);
  *
  * Checks if the packet has enough data to be re-assembled and passes it for further processing.
  * If successful then the re-assembly context in @p smpt will indicate that there is no
- * re-assembly in progress.
+ * re-assembly in progress. The packet is handed to smp_rx_req(), which consumes it and
+ * processes it asynchronously. The caller must not access the packet's user data after
+ * this call.
  * The function can be forced to pass a data for processing even if the packet is not complete,
  * in which case it is users responsibility to use the user data, passed with the packet, to notify
  * receiving end of such case.
@@ -92,6 +102,9 @@ int smp_reassembly_complete(struct smp_transport *smpt, bool force);
 
 /**
  * Drop packet and release buffer
+ *
+ * This does not call the transport's user-data free callback. If user data owns
+ * a resource, the caller must release it before calling this function.
  *
  * @param smpt	the SMP transport;
  *
@@ -120,4 +133,4 @@ void *smp_reassembly_get_ud(const struct smp_transport *smpt);
 }
 #endif
 
-#endif /* ZEPHYR_INCLUDE_MGMT_SMP_REASSEMBLY_H_ */
+#endif /* ZEPHYR_INCLUDE_MGMT_MCUMGR_TRANSPORT_SMP_REASSEMBLY_H_ */

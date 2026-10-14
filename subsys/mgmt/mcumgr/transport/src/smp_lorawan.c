@@ -12,7 +12,7 @@
 #include <zephyr/mgmt/mcumgr/mgmt/handlers.h>
 
 #include <mgmt/mcumgr/transport/smp_internal.h>
-#include <mgmt/mcumgr/transport/smp_reassembly.h>
+#include <zephyr/mgmt/mcumgr/transport/smp_reassembly.h>
 
 LOG_MODULE_REGISTER(smp_lorawan, CONFIG_MCUMGR_TRANSPORT_LORAWAN_LOG_LEVEL);
 
