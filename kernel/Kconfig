@@ -169,6 +169,19 @@ config MAIN_STACK_SIZE
 
 	  After initialization is complete, the thread runs main().
 
+config MAIN_THREAD_USERSPACE
+	bool "Allow the main thread to enter user mode" if MULTITHREADING
+	depends on USERSPACE
+	default y
+	help
+	  Reserve a user-capable stack for the main thread, allowing it to call
+	  k_thread_user_mode_enter(). The thread still starts in supervisor mode.
+
+	  Disable this if main always remains in supervisor mode. Its stack then
+	  uses kernel-only alignment and does not require a separate privileged
+	  stack on architectures which allocate one. Other threads can still use
+	  user mode, and main retains its configured stack size and protection.
+
 config IDLE_STACK_SIZE
 	int "Size of stack for idle thread"
 	default 2048 if COVERAGE_GCOV

@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+
+common:
+  tags:
+    - kernel
+    - threads
+    - userspace
+  platform_allow:
+    - mps2/an385
+  filter: CONFIG_ARCH_HAS_USERSPACE
+  harness: console
+  harness_config:
+    type: one_line
+    regex:
+      - "main_stack: PASS"
+
+tests:
+  kernel.threads.main_stack.user_capable:
+  kernel.threads.main_stack.kernel_only:
+    extra_configs:
+      - CONFIG_MAIN_THREAD_USERSPACE=n
+    extra_args: EXTRA_CPPFLAGS=-DTEST_MAIN_THREAD_USERSPACE_DISABLED=1

@@ -52,7 +52,11 @@ __pinned_bss atomic_t _cpus_active;
 #endif
 
 /* init/main and idle threads */
+#ifdef CONFIG_MAIN_THREAD_USERSPACE
 K_THREAD_PINNED_STACK_DEFINE(z_main_stack, CONFIG_MAIN_STACK_SIZE);
+#else
+K_KERNEL_PINNED_STACK_DEFINE(z_main_stack, CONFIG_MAIN_STACK_SIZE);
+#endif
 struct k_thread z_main_thread;
 
 #ifdef CONFIG_MULTITHREADING
@@ -459,7 +463,9 @@ static char *prepare_multithreading(void)
 	_kernel.ready_q.cache = &z_main_thread;
 #endif /* CONFIG_SMP */
 	stack_ptr = z_setup_new_thread(&z_main_thread, z_main_stack,
-				       K_THREAD_STACK_SIZEOF(z_main_stack),
+				       IS_ENABLED(CONFIG_MAIN_THREAD_USERSPACE) ?
+					       K_THREAD_STACK_SIZEOF(z_main_stack) :
+					       K_KERNEL_STACK_SIZEOF(z_main_stack),
 				       bg_thread_main,
 				       NULL, NULL, NULL,
 				       CONFIG_MAIN_THREAD_PRIORITY,
