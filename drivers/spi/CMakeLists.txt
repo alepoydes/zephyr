@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
-zephyr_syscall_header(${ZEPHYR_BASE}/include/zephyr/drivers/spi.h)
+if(NOT CONFIG_USERSPACE OR CONFIG_SPI_USERSPACE)
+  zephyr_syscall_header(${ZEPHYR_BASE}/include/zephyr/drivers/spi.h)
+endif()
 
 zephyr_library()
 
@@ -8,7 +10,7 @@ zephyr_library()
 zephyr_library_sources_ifdef(CONFIG_SPI_ASYNC spi_signal.c)
 zephyr_library_sources_ifdef(CONFIG_SPI_RTIO spi_rtio.c)
 zephyr_library_sources_ifdef(CONFIG_SPI_SHELL spi_shell.c)
-zephyr_library_sources_ifdef(CONFIG_USERSPACE spi_handlers.c)
+zephyr_library_sources_ifdef(CONFIG_SPI_USERSPACE spi_handlers.c)
 # zephyr-keep-sorted-stop
 
 # zephyr-keep-sorted-start

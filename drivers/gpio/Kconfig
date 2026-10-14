@@ -10,6 +10,16 @@ menuconfig GPIO
 
 if GPIO
 
+config GPIO_USERSPACE
+	bool "GPIO access from user mode"
+	depends on USERSPACE
+	default y
+	help
+	  Build system call handlers for direct GPIO access from user threads.
+	  Device permissions are still required. Disable this when devices are
+	  owned exclusively by supervisor services to omit the handlers.
+	  Supervisor APIs remain available.
+
 module = GPIO
 module-str = gpio
 source "subsys/logging/Kconfig.template.log_config"

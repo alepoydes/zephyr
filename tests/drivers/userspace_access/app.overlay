@@ -1,0 +1,18 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/ {
+	aliases {
+		test-uart = &uart1;
+		test-gpio = &test_gpio;
+	};
+
+	test_gpio: test-gpio {
+		compatible = "zephyr,gpio-emul";
+		status = "okay";
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <1>;
+	};
+};
+
+&uart1 { status = "okay"; };

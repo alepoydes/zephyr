@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
-zephyr_syscall_header(${ZEPHYR_BASE}/include/zephyr/drivers/gpio.h)
+if(NOT CONFIG_USERSPACE OR CONFIG_GPIO_USERSPACE)
+  zephyr_syscall_header(${ZEPHYR_BASE}/include/zephyr/drivers/gpio.h)
+endif()
 
 zephyr_library()
 
@@ -134,7 +136,7 @@ zephyr_library_sources_ifdef(CONFIG_LPGPIO_ESP32 gpio_esp32_lp.c)
 # zephyr-keep-sorted-start
 zephyr_library_sources_ifdef(CONFIG_GPIO_HOGS gpio_hogs.c)
 zephyr_library_sources_ifdef(CONFIG_GPIO_SHELL gpio_shell.c)
-zephyr_library_sources_ifdef(CONFIG_USERSPACE gpio_handlers.c)
+zephyr_library_sources_ifdef(CONFIG_GPIO_USERSPACE gpio_handlers.c)
 # zephyr-keep-sorted-stop
 
 if(CONFIG_GPIO_EMUL_SDL)

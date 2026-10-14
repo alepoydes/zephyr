@@ -15,6 +15,16 @@ menuconfig ADC
 
 if ADC
 
+config ADC_USERSPACE
+	bool "ADC access from user mode"
+	depends on USERSPACE
+	default y
+	help
+	  Build system call handlers for direct ADC access from user threads.
+	  Device permissions are still required. Disable this when devices are
+	  owned exclusively by supervisor services to omit the handlers.
+	  Supervisor APIs remain available.
+
 config ADC_SHELL
 	bool "ADC Shell"
 	depends on SHELL

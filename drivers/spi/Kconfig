@@ -13,6 +13,16 @@ menuconfig SPI
 
 if SPI
 
+config SPI_USERSPACE
+	bool "SPI access from user mode"
+	depends on USERSPACE
+	default y
+	help
+	  Build system call handlers for direct SPI access from user threads.
+	  Device permissions are still required. Disable this when devices are
+	  owned exclusively by supervisor services to omit the handlers.
+	  Supervisor APIs remain available.
+
 config SPI_SHELL
 	bool "SPI Shell"
 	depends on SHELL

@@ -10,6 +10,16 @@ menuconfig PWM
 
 if PWM
 
+config PWM_USERSPACE
+	bool "PWM access from user mode"
+	depends on USERSPACE
+	default y
+	help
+	  Build system call handlers for direct PWM access from user threads.
+	  Device permissions are still required. Disable this when devices are
+	  owned exclusively by supervisor services to omit the handlers.
+	  Supervisor APIs remain available.
+
 module = PWM
 module-str = pwm
 source "subsys/logging/Kconfig.template.log_config"

@@ -11,6 +11,16 @@ menuconfig WATCHDOG
 
 if WATCHDOG
 
+config WDT_USERSPACE
+	bool "Watchdog access from user mode"
+	depends on USERSPACE
+	default y
+	help
+	  Build system call handlers for direct watchdog access from user threads.
+	  Device permissions are still required. Disable this when devices are
+	  owned exclusively by supervisor services to omit the handlers.
+	  Supervisor APIs remain available.
+
 config HAS_WDT_DISABLE_AT_BOOT
 	bool
 	help

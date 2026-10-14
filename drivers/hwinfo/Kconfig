@@ -10,6 +10,15 @@ menuconfig HWINFO
 
 if HWINFO
 
+config HWINFO_USERSPACE
+	bool "Hardware information access from user mode"
+	depends on USERSPACE
+	default y
+	help
+	  Build system call handlers for hardware information queries from user
+	  threads. Disable this when only supervisor services use this API to
+	  omit its handlers. Supervisor APIs remain available.
+
 module = HWINFO
 module-str = HWINFO
 source "subsys/logging/Kconfig.template.log_config"

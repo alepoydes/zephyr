@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
-zephyr_syscall_header(${ZEPHYR_BASE}/include/zephyr/drivers/i2c.h)
+if(NOT CONFIG_USERSPACE OR CONFIG_I2C_USERSPACE)
+  zephyr_syscall_header(${ZEPHYR_BASE}/include/zephyr/drivers/i2c.h)
+endif()
 
 zephyr_library()
 
@@ -15,7 +17,7 @@ zephyr_library_sources_ifdef(CONFIG_I2C_RTIO i2c_rtio.c i2c_rtio_default.c)
 
 zephyr_library_sources_ifdef(CONFIG_I2C_SHELL i2c_shell.c)
 zephyr_library_sources_ifdef(CONFIG_I2C_TEST i2c_test.c)
-zephyr_library_sources_ifdef(CONFIG_USERSPACE i2c_handlers.c)
+zephyr_library_sources_ifdef(CONFIG_I2C_USERSPACE i2c_handlers.c)
 # zephyr-keep-sorted-stop
 
 add_subdirectory_ifdef(CONFIG_I2C_TARGET target)

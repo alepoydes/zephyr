@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
-zephyr_syscall_header(${ZEPHYR_BASE}/include/zephyr/drivers/watchdog.h)
+if(NOT CONFIG_USERSPACE OR CONFIG_WDT_USERSPACE)
+  zephyr_syscall_header(${ZEPHYR_BASE}/include/zephyr/drivers/watchdog.h)
+endif()
 
 zephyr_library()
 zephyr_library_property(ALLOW_EMPTY TRUE)
@@ -8,7 +10,6 @@ zephyr_library_property(ALLOW_EMPTY TRUE)
 # zephyr-keep-sorted-start
 zephyr_library_sources_ifdef(CONFIG_FWDGT_GD32 wdt_fwdgt_gd32.c)
 zephyr_library_sources_ifdef(CONFIG_IWDG_STM32 wdt_iwdg_stm32.c)
-zephyr_library_sources_ifdef(CONFIG_USERSPACE wdt_handlers.c)
 zephyr_library_sources_ifdef(CONFIG_WDOG_CMSDK_APB wdt_cmsdk_apb.c)
 zephyr_library_sources_ifdef(CONFIG_WDT_ADI_MAX42500 wdt_adi_max42500.c)
 zephyr_library_sources_ifdef(CONFIG_WDT_AMBIQ wdt_ambiq.c)
@@ -63,6 +64,7 @@ zephyr_library_sources_ifdef(CONFIG_WDT_SMARTBOND wdt_smartbond.c)
 zephyr_library_sources_ifdef(CONFIG_WDT_TCO wdt_tco.c)
 zephyr_library_sources_ifdef(CONFIG_WDT_TI_RTI wdt_ti_rti.c)
 zephyr_library_sources_ifdef(CONFIG_WDT_TI_TPS382X wdt_ti_tps382x.c)
+zephyr_library_sources_ifdef(CONFIG_WDT_USERSPACE wdt_handlers.c)
 zephyr_library_sources_ifdef(CONFIG_WDT_XEC wdt_mchp_xec.c)
 zephyr_library_sources_ifdef(CONFIG_WDT_XILINX_AXI wdt_xilinx_axi.c)
 zephyr_library_sources_ifdef(CONFIG_WDT_XMC4XXX wdt_xmc4xxx.c)
