@@ -85,6 +85,8 @@ static struct k_spinlock obj_lock;         /* kobj struct data */
 
 #define MAX_THREAD_BITS (CONFIG_MAX_THREAD_BYTES * BITS_PER_BYTE)
 
+static void clear_static_perms(uintptr_t index);
+
 #ifdef CONFIG_DYNAMIC_OBJECTS
 extern uint8_t _thread_idx_map[CONFIG_MAX_THREAD_BYTES];
 static void clear_perms_cb(struct k_object *ko, void *ctx_ptr);
@@ -303,7 +305,7 @@ static bool thread_idx_alloc(uintptr_t *tidx)
 
 			/* Clear permission from all objects */
 
-			z_object_gperf_wordlist_foreach(clear_perms_cb, (void *)*tidx);
+			clear_static_perms(*tidx);
 
 			SYS_DLIST_FOR_EACH_CONTAINER_SAFE(&obj_list, obj, next, dobj_list) {
 				clear_perms_cb(&obj->kobj, (void *)*tidx);
@@ -334,7 +336,7 @@ static void thread_idx_free(uintptr_t tidx)
 {
 	struct dyn_obj *obj, *next;
 
-	z_object_gperf_wordlist_foreach(clear_perms_cb, (void *)tidx);
+	clear_static_perms(tidx);
 
 	/* Hold lists_lock so two concurrent k_object_free() calls on thread indices
 	 * within the same byte cannot lose a bit in the non-atomic |=.
@@ -802,16 +804,27 @@ static void clear_perms_cb(struct k_object *ko, void *ctx_ptr)
 }
 #endif
 
-static void clear_perms_sched_locked_cb(struct k_object *ko, void *ctx_ptr)
+static void clear_static_perms_cb(struct k_object *ko, void *ctx_ptr)
 {
 	uintptr_t id = (uintptr_t)ctx_ptr;
 
-	if (IS_ENABLED(CONFIG_DYNAMIC_OBJECTS)) {
-		unref_check(ko, id, true);
-	} else {
-		/* The caller holds obj_lock across the static object table. */
-		sys_bitfield_clear_bit((mem_addr_t)&ko->perms, id);
-	}
+	/* The caller holds obj_lock across the static object table. */
+	sys_bitfield_clear_bit((mem_addr_t)&ko->perms, id);
+}
+
+static void clear_static_perms(uintptr_t index)
+{
+	/* Static objects cannot be reclaimed, even in a dynamic-object build.
+	 * Batch their permission updates instead of locking for every entry.
+	 */
+	k_spinlock_key_t key = k_spin_lock(&obj_lock);
+
+#ifdef CONFIG_DYNAMIC_OBJECTS
+	z_object_gperf_wordlist_foreach(clear_static_perms_cb, (void *)index);
+#else
+	k_object_wordlist_foreach(clear_static_perms_cb, (void *)index);
+#endif
+	k_spin_unlock(&obj_lock, key);
 }
 
 void k_thread_perms_all_clear(struct k_thread *thread)
@@ -819,20 +832,18 @@ void k_thread_perms_all_clear(struct k_thread *thread)
 	uintptr_t index = thread_index_get(thread);
 
 	if ((int)index != -1) {
-		k_spinlock_key_t key;
+		clear_static_perms(index);
 
-		/* Static objects cannot be reclaimed. Lock their permissions once
-		 * instead of once per object while the scheduler already masks IRQs.
-		 * Dynamic traversal retains its lists_lock -> obj_lock ordering.
-		 */
-		if (!IS_ENABLED(CONFIG_DYNAMIC_OBJECTS)) {
-			key = k_spin_lock(&obj_lock);
+#ifdef CONFIG_DYNAMIC_OBJECTS
+		struct dyn_obj *obj, *next;
+		/* Dynamic reclamation retains lists_lock -> obj_lock ordering. */
+		k_spinlock_key_t key = k_spin_lock(&lists_lock);
+
+		SYS_DLIST_FOR_EACH_CONTAINER_SAFE(&obj_list, obj, next, dobj_list) {
+			unref_check(&obj->kobj, index, true);
 		}
-		k_object_wordlist_foreach(clear_perms_sched_locked_cb,
-					 (void *)index);
-		if (!IS_ENABLED(CONFIG_DYNAMIC_OBJECTS)) {
-			k_spin_unlock(&obj_lock, key);
-		}
+		k_spin_unlock(&lists_lock, key);
+#endif
 	}
 }
 

@@ -474,6 +474,39 @@ ZTEST(mem_protect_kobj, test_thread_has_residual_permissions)
 	k_thread_join(&kobj_child_thread, K_FOREVER);
 }
 
+static void give_dynamic_sems(void *exclusive, void *shared, void *unused)
+{
+	k_sem_give(exclusive);
+	k_sem_give(shared);
+}
+
+ZTEST(mem_protect_kobj, test_thread_exit_reclaims_unreferenced_objects)
+{
+	set_fault_valid(false);
+
+	struct k_sem *exclusive = k_object_alloc(K_OBJ_SEM);
+	struct k_sem *shared = k_object_alloc(K_OBJ_SEM);
+
+	zassert_not_null(exclusive);
+	zassert_not_null(shared);
+	zassert_ok(k_sem_init(exclusive, 0, 1));
+	zassert_ok(k_sem_init(shared, 0, 1));
+	k_thread_create(&kobj_child_thread, child_stack, KOBJECT_STACK_SIZE,
+			give_dynamic_sems, exclusive, shared, NULL, 0, K_USER, K_FOREVER);
+	k_thread_access_grant(&kobj_child_thread, exclusive, shared);
+	k_object_release(exclusive);
+	zassert_not_null(k_object_find(exclusive));
+
+	k_thread_start(&kobj_child_thread);
+	zassert_ok(k_thread_join(&kobj_child_thread, K_SECONDS(1)));
+	/* Exiting the last owner reclaims only the unreferenced object. */
+	zassert_is_null(k_object_find(exclusive));
+	zassert_not_null(k_object_find(shared));
+	zassert_equal(k_sem_count_get(shared), 1);
+	k_object_release(shared);
+	zassert_is_null(k_object_find(shared));
+}
+
 /****************************************************************************/
 /**
  * @brief Test grant access to a valid kobject but invalid thread id
