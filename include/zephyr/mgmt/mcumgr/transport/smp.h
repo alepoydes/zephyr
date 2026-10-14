@@ -235,6 +235,17 @@ int smp_transport_init(struct smp_transport *smpt);
 void smp_rx_req(struct smp_transport *smpt, struct net_buf *nb);
 
 /**
+ * @brief Borrow the MCUmgr transport work queue.
+ *
+ * The queue is ready after POST_KERNEL initialization. Submitted work
+ * should be short and must not wait for other work on this queue. The caller
+ * must not reconfigure or stop the queue.
+ *
+ * @return The MCUmgr transport work queue.
+ */
+struct k_work_q *smp_get_wq(void);
+
+/**
  * @brief	Used to remove queued requests for an SMP transport that are no longer valid. A
  *		smp_transport_query_valid_check_fn() function must be registered for this to
  *		function. If the smp_transport_query_valid_check_fn() function returns false

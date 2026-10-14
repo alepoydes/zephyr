@@ -39,15 +39,6 @@ struct smp_hdr {
 struct smp_transport;
 struct zephyr_smp_transport;
 
-#ifdef CONFIG_SMP_CLIENT
-/**
- * @brief Get work queue for SMP client.
- *
- * @return SMP work queue object.
- */
-struct k_work_q *smp_get_wq(void);
-#endif
-
 /**
  * @brief Allocates a request buffer.
  *

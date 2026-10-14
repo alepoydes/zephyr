@@ -9,9 +9,31 @@ static unsigned int began, ended, handled, sent, cleaned;
 static int admission, output_error, final_result;
 static bool active;
 static unsigned int token;
+static atomic_t queued_test, borrowed_finished;
+static K_SEM_DEFINE(borrowed_started, 0, 1);
+static K_SEM_DEFINE(borrowed_release, 0, 1);
+static K_SEM_DEFINE(queued_request_done, 0, 1);
+static k_tid_t borrowed_thread, request_thread;
+static bool borrowed_finished_at_begin;
+static int borrowed_wait_result;
+
+static void borrowed_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	borrowed_thread = k_current_get();
+	k_sem_give(&borrowed_started);
+	borrowed_wait_result = k_sem_take(&borrowed_release, K_SECONDS(1));
+	atomic_set(&borrowed_finished, 1);
+}
+
+K_WORK_DEFINE(borrowed_work, borrowed_work_handler);
 
 static int begin(const struct net_buf *request, void **context)
 {
+	if (atomic_get(&queued_test)) {
+		request_thread = k_current_get();
+		borrowed_finished_at_begin = atomic_get(&borrowed_finished);
+	}
 	zassert_not_null(request);
 	zassert_is_null(*context);
 	zassert_false(active);
@@ -33,6 +55,9 @@ static void end(void *context, int result)
 	active = false;
 	ended++;
 	final_result = result;
+	if (atomic_get(&queued_test)) {
+		k_sem_give(&queued_request_done);
+	}
 }
 
 static void cleanup(void *data)
@@ -90,6 +115,7 @@ static void before(void *fixture)
 	began = ended = handled = sent = cleaned = 0;
 	admission = output_error = final_result = 0;
 	active = false;
+	atomic_clear(&queued_test);
 }
 
 static void *setup(void)
@@ -179,6 +205,46 @@ ZTEST(lifetime, test_incomplete_callback_pair)
 	zassert_equal(began, 0);
 	zassert_equal(handled, 0);
 	zassert_equal(cleaned, 1);
+}
+
+ZTEST(lifetime, test_borrowed_work_and_request_share_queue)
+{
+	struct k_work_sync sync;
+	struct net_buf *request;
+
+	zassert_ok(smp_transport_init(&transport));
+	k_sem_reset(&borrowed_started);
+	k_sem_reset(&borrowed_release);
+	k_sem_reset(&queued_request_done);
+	atomic_clear(&borrowed_finished);
+	borrowed_thread = request_thread = NULL;
+	borrowed_finished_at_begin = false;
+	borrowed_wait_result = -EINPROGRESS;
+	atomic_set(&queued_test, 1);
+
+	zassert_true(k_work_submit_to_queue(smp_get_wq(), &borrowed_work) > 0);
+	zassert_ok(k_sem_take(&borrowed_started, K_SECONDS(1)));
+	request = smp_packet_alloc();
+	zassert_not_null(request);
+	net_buf_add_mem(request, read_packet, sizeof(read_packet));
+	smp_rx_req(&transport, request);
+
+	k_sem_give(&borrowed_release);
+	(void)k_work_flush(&borrowed_work, &sync);
+	int completed = k_sem_take(&queued_request_done, K_SECONDS(1));
+
+	(void)k_work_flush(&transport.work, &sync);
+
+	atomic_clear(&queued_test);
+	zassert_ok(completed);
+	zassert_ok(borrowed_wait_result);
+	zassert_equal_ptr(request_thread, borrowed_thread);
+	zassert_true(borrowed_finished_at_begin);
+	zassert_equal(began, 1);
+	zassert_equal(ended, 1);
+	zassert_equal(handled, 1);
+	zassert_equal(sent, 1);
+	zassert_ok(final_result);
 }
 
 ZTEST_SUITE(lifetime, NULL, setup, before, NULL, NULL);

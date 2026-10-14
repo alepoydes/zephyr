@@ -233,12 +233,10 @@ smp_rx_req(struct smp_transport *smpt, struct net_buf *nb)
 	k_work_submit_to_queue(&smp_work_queue, &smpt->work);
 }
 
-#ifdef CONFIG_SMP_CLIENT
 struct k_work_q *smp_get_wq(void)
 {
 	return &smp_work_queue;
 }
-#endif
 
 void smp_rx_remove_invalid(struct smp_transport *zst, void *arg)
 {
@@ -305,4 +303,4 @@ static int smp_init(void)
 	return 0;
 }
 
-SYS_INIT(smp_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
+SYS_INIT(smp_init, POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);
