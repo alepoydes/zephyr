@@ -220,3 +220,10 @@ tests:
     extra_conf_files: ['no_mem_protection.conf']
     extra_configs:
       - CONFIG_LLEXT_HEAP_DYNAMIC=y
+  llext.system_heap:
+    arch_allow: arm
+    filter: not CONFIG_MPU and not CONFIG_MMU
+    extra_conf_files: ['no_mem_protection.conf']
+    extra_configs:
+      - CONFIG_LLEXT_HEAP_SYSTEM=y
+      - CONFIG_HEAP_MEM_POOL_SIZE=65536

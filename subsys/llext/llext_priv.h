@@ -14,7 +14,7 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 
-#ifdef CONFIG_LLEXT_HEAP_K_HEAP
+#if defined(CONFIG_LLEXT_HEAP_K_HEAP) || defined(CONFIG_LLEXT_HEAP_SYSTEM)
 #include "llext_kheap.h"
 #elif defined(CONFIG_LLEXT_HEAP_MEMBLK)
 #include "llext_memblk.h"

@@ -273,6 +273,76 @@ LLEXT_LOAD_UNLOAD(hello_world,
 	.kernel_only = true
 )
 
+#ifdef CONFIG_LLEXT_HEAP_SYSTEM
+/* Probe the public system allocator without relying on its internal heap object. */
+static size_t largest_system_request(void)
+{
+	size_t low = 0, high = CONFIG_HEAP_MEM_POOL_SIZE + 1;
+
+	while (low + 1 < high) {
+		size_t middle = low + (high - low) / 2;
+		void *block = k_malloc(middle);
+
+		if (block) {
+			low = middle;
+			k_free(block);
+		} else {
+			high = middle;
+		}
+	}
+	return low;
+}
+
+static int system_heap_read_failure(struct llext_loader *ldr, void *buf, size_t len)
+{
+	struct llext_buf_loader *source = CONTAINER_OF(ldr, struct llext_buf_loader, loader);
+
+	if (source->pos) {
+		return -EIO;
+	}
+	return llext_buf_read(ldr, buf, len);
+}
+
+ZTEST(llext, test_system_heap_independent_unload)
+{
+	struct llext_load_param parameters = LLEXT_LOAD_PARAM_DEFAULT;
+	struct llext *first = NULL, *second = NULL, *failed = NULL;
+	struct llext_buf_loader first_loader =
+		LLEXT_TEMPORARY_BUF_LOADER(hello_world_ext, sizeof(hello_world_ext));
+	struct llext_buf_loader second_loader =
+		LLEXT_TEMPORARY_BUF_LOADER(hello_world_ext, sizeof(hello_world_ext));
+	struct llext_buf_loader failed_loader =
+		LLEXT_TEMPORARY_BUF_LOADER(hello_world_ext, sizeof(hello_world_ext));
+	size_t empty = largest_system_request();
+
+	zassert_true(empty > 0, "system heap must be configured");
+	zassert_ok(llext_load(&first_loader.loader, "system_first", &first, &parameters));
+	size_t first_live = largest_system_request();
+
+	zassert_true(first_live < empty, "first extension must use system heap");
+	failed_loader.loader.peek = NULL;
+	failed_loader.loader.read = system_heap_read_failure;
+	zassert_equal(llext_load(&failed_loader.loader, "system_failed", &failed,
+				 &parameters), -EIO, "injected load failure must propagate");
+	zassert_is_null(failed);
+	zassert_equal(largest_system_request(), first_live,
+		      "failed load must release its system allocations");
+
+	zassert_ok(llext_load(&second_loader.loader, "system_second", &second, &parameters));
+	size_t both_live = largest_system_request();
+
+	zassert_true(both_live < first_live, "second extension must allocate independently");
+	zassert_ok(llext_unload(&first));
+	zassert_not_null(llext_find_sym(&second->exp_tab, "test_entry"),
+			 "second extension must remain valid after first unload");
+	zassert_true(largest_system_request() >= both_live,
+		     "first unload must not consume system heap");
+	zassert_ok(llext_unload(&second));
+	zassert_equal(largest_system_request(), empty,
+		      "independent unloads must restore system heap capacity");
+}
+#endif
+
 #if defined(CONFIG_LLEXT_HEAP_DYNAMIC) && !defined(CONFIG_HARVARD) && \
 	!defined(CONFIG_LLEXT_HEAP_MEMBLK)
 #define PER_LOAD_HEAP_SIZE KB(24)

@@ -59,9 +59,7 @@ choice LLEXT_HEAP_MANAGEMENT
 	prompt "llext heap memory management"
 	default LLEXT_HEAP_K_HEAP
 	help
-	  Select the memory management API used to store extension regions in
-	  LLEXT heap memory. This choice does not affect LLEXT metadata, which is always
-	  managed with k_heap.
+	  Select the memory management API used for extension regions and metadata.
 
 config LLEXT_HEAP_K_HEAP
 	bool "Use k_heap"
@@ -70,6 +68,14 @@ config LLEXT_HEAP_K_HEAP
 	  k_heap allocates additional memory for bookkeeping data after the
 	  requested allocation, which increases the memory overhead slightly
 	  and may cause misalignment with MPU regions.
+
+config LLEXT_HEAP_SYSTEM
+	bool "Use the system heap"
+	depends on !HARVARD && !LLEXT_HEAP_DYNAMIC
+	help
+	  Allocate extension metadata and regions from the system heap with
+	  k_malloc() and k_aligned_alloc(). Allocations are returned individually
+	  on unload. The application must configure a nonzero system heap.
 
 config LLEXT_HEAP_MEMBLK
 	bool "Use sys_mem_blocks"
@@ -84,7 +90,7 @@ endchoice
 
 config LLEXT_HEAP_SIZE
 	int "llext heap memory size in kilobytes"
-	depends on !LLEXT_HEAP_DYNAMIC && !HARVARD && !LLEXT_HEAP_MEMBLK
+	depends on LLEXT_HEAP_K_HEAP && !LLEXT_HEAP_DYNAMIC && !HARVARD
 	default 8
 	help
 	  Heap size in kilobytes available to llext for dynamic allocation. Replaced by

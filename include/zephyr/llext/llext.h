@@ -213,7 +213,8 @@ struct llext_load_param {
 
 	/**
 	 * Optional initialized heap for this extension's metadata and regions.
-	 * NULL uses the configured LLEXT heaps. The caller must keep this heap
+	 * NULL uses the configured LLEXT allocator, which may be the system heap.
+	 * The caller must keep an explicitly supplied heap
 	 * and its backing memory alive until the extension is unloaded; failed
 	 * loads release their allocations before returning. Loading an already
 	 * registered name retains that extension and its original heap.
