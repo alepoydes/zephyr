@@ -28,6 +28,17 @@ config PICOLIBC_USE_TOOLCHAIN
 
 endchoice # PICOLIBC_SOURCE
 
+config PICOLIBC_TOOLCHAIN_SPEED_OPTIMIZATIONS
+	bool "Use speed-optimized toolchain Picolibc archive"
+	depends on PICOLIBC_USE_TOOLCHAIN && "$(TOOLCHAIN_VARIANT_COMPILER)" = "gnu"
+	help
+	  Select the Picolibc archive that the GNU toolchain chooses for -O2,
+	  independently of the firmware's optimization level. The compiler and
+	  linker flags for Zephyr code are unchanged. Configuration fails if the
+	  toolchain cannot locate this archive. Select firmware optimization
+	  through Kconfig; additional -O flags can change multilib selection and
+	  are rejected.
+
 choice PICOLIBC_IO_LEVEL
 	prompt "Picolibc printf/scanf level"
 	default PICOLIBC_IO_MINIMAL if CBPRINTF_NANO
