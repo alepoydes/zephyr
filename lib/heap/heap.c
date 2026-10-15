@@ -463,6 +463,39 @@ void *sys_heap_noalign_alloc(struct sys_heap *heap, size_t align, size_t bytes)
 	return sys_heap_alloc(heap, bytes);
 }
 
+/* A worst-case padding request can fail even when an available chunk already
+ * has the required alignment. Probe a bounded number of actual addresses,
+ * starting with the largest remaining bucket to favor a successful fit.
+ */
+static chunkid_t alloc_aligned_chunk(struct z_heap *h, size_t align, size_t rew, size_t bytes)
+{
+	int minimum = bucket_idx(h, bytes_to_chunksz(h, bytes, 0));
+	uint32_t buckets = h->avail_buckets & ~BIT_MASK(minimum);
+	int tries = CONFIG_SYS_HEAP_ALLOC_LOOPS;
+
+	while (buckets != 0U && tries > 0) {
+		int bi = 31 - __builtin_clz(buckets);
+		struct z_heap_bucket *b = &h->buckets[bi];
+		chunkid_t first = b->next;
+
+		do {
+			chunkid_t c = b->next;
+			size_t available = chunk_usable_bytes(h, c);
+			size_t padding = (-(uintptr_t)chunk_mem(h, c) - rew) & (align - 1);
+
+			if (padding <= available && bytes <= available - padding) {
+				free_chunk_check(h, c, false);
+				free_list_remove_bidx(h, c, bi);
+				return c;
+			}
+			b->next = next_free_chunk(h, c);
+			CHECK(b->next != 0U);
+		} while (--tries > 0 && b->next != first);
+		buckets &= ~BIT(bi);
+	}
+	return 0;
+}
+
 void *sys_heap_aligned_alloc(struct sys_heap *heap, size_t align, size_t bytes)
 {
 	struct z_heap *h = heap->heap;
@@ -501,6 +534,9 @@ void *sys_heap_aligned_alloc(struct sys_heap *heap, size_t align, size_t bytes)
 	chunkid_t c0 = alloc_chunk(h, padded_sz);
 
 	if (c0 == 0) {
+		c0 = alloc_aligned_chunk(h, align, rew, bytes);
+	}
+	if (c0 == 0) {
 		return NULL;
 	}
 	uint8_t *mem = chunk_mem(h, c0);
@@ -512,7 +548,7 @@ void *sys_heap_aligned_alloc(struct sys_heap *heap, size_t align, size_t bytes)
 	/* Get corresponding chunks */
 	chunkid_t c = mem_to_chunkid(h, mem);
 	chunkid_t c_end = end - chunk_buf(h) + CHUNK_TRAILER_SIZE;
-	CHECK(c >= c0 && c  < c_end && c_end <= c0 + padded_sz);
+	CHECK(c >= c0 && c  < c_end && c_end <= right_chunk(h, c0));
 
 	/* Split and free unused prefix */
 	if (c > c0) {

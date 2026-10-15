@@ -94,6 +94,8 @@ the minimum bucket size for an allocation (the set of free blocks that
 unbounded list searches, at the expense of some fragmentation
 resistance.  This :kconfig:option:`CONFIG_SYS_HEAP_ALLOC_LOOPS` value may be
 chosen by the user at build time, and defaults to a value of 3.
+If an aligned allocation cannot reserve worst-case padding, it examines at most
+that many additional chunk addresses for a fit with their actual padding.
 
 Multi-Heap Wrapper Utility
 **************************

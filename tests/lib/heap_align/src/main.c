@@ -135,4 +135,55 @@ ZTEST(lib_heap_align, test_aligned_alloc)
 	sys_heap_free(&heap, q);
 }
 
+/* An already aligned free block needs no extra alignment reservation. A
+ * minimally aligned allocation probes its actual address without depending
+ * on heap headers or the allocator's size calculation. */
+static void check_tight_aligned_alloc(size_t rewind)
+{
+	enum { ALIGN = 256, BLOCK_SIZE = 256, HEAP_SIZE = 448 };
+	static uint8_t tightmem[ALIGN + HEAP_SIZE] __aligned(ALIGN);
+	struct sys_heap heap = {};
+	void *probe = NULL;
+	void *block;
+
+	for (size_t offset = 0; offset < ALIGN; offset += 8) {
+		sys_heap_init(&heap, tightmem + offset, HEAP_SIZE);
+		probe = sys_heap_aligned_alloc(&heap, 8, BLOCK_SIZE);
+		zassert_not_null(probe, "baseline block did not fit");
+		if (IS_ALIGNED((uintptr_t)probe + rewind, ALIGN)) {
+			sys_heap_free(&heap, probe);
+			break;
+		}
+		sys_heap_free(&heap, probe);
+		probe = NULL;
+	}
+
+	zassert_not_null(probe, "no suitably aligned block found");
+	zassert_true(sys_heap_validate(&heap), "heap invalid after probe");
+	/* The allocator's rewind convention aligns the pointer plus rewind. */
+	block = sys_heap_aligned_alloc(&heap, ALIGN | rewind, BLOCK_SIZE);
+
+	zassert_not_null(block, "fitting aligned block rejected");
+	zassert_true(IS_ALIGNED((uintptr_t)block + rewind, ALIGN), "wrong alignment");
+	memset(block, 0xa5, BLOCK_SIZE);
+	zassert_is_null(sys_heap_aligned_alloc(&heap, ALIGN | rewind, HEAP_SIZE),
+			"oversize allocation succeeded");
+	zassert_equal(((uint8_t *)block)[0], 0xa5, "failed allocation changed live block");
+	zassert_equal(((uint8_t *)block)[BLOCK_SIZE - 1], 0xa5,
+		      "failed allocation changed live block");
+	zassert_true(sys_heap_validate(&heap), "heap invalid after failed allocation");
+	sys_heap_free(&heap, block);
+	zassert_true(sys_heap_validate(&heap), "heap invalid after free");
+	block = sys_heap_aligned_alloc(&heap, ALIGN | rewind, BLOCK_SIZE);
+	zassert_not_null(block, "aligned block was not reclaimed");
+	sys_heap_free(&heap, block);
+	zassert_true(sys_heap_validate(&heap), "heap invalid after reuse");
+}
+
+ZTEST(lib_heap_align, test_tight_aligned_alloc)
+{
+	check_tight_aligned_alloc(0);
+	check_tight_aligned_alloc(8);
+}
+
 ZTEST_SUITE(lib_heap_align, NULL, NULL, NULL, NULL, NULL);
