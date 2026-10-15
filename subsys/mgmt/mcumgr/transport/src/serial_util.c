@@ -221,20 +221,20 @@ struct net_buf *mcumgr_serial_process_frag(struct mcumgr_serial_rx_ctxt *rx_ctxt
 
 #if defined(CONFIG_MCUMGR_TRANSPORT_SERIAL_HAS_SMP_OVER_CONSOLE)
 /**
- * Base64-encodes a small chunk of data and transmits it. The data must be no larger than three
- * bytes.
+ * Base64-encodes a chunk of data and transmits it. A frame holds at most 124 encoded bytes
+ * after its two-byte marker and before its newline; base64_encode() needs one more byte for
+ * the null terminator.
  */
-static int mcumgr_serial_tx_small(const void *data, int len, mcumgr_serial_tx_cb cb)
+static int mcumgr_serial_tx_chunk(const void *data, int len, mcumgr_serial_tx_cb cb)
 {
-	uint8_t b64[4 + 1]; /* +1 required for null terminator. */
+	uint8_t b64[MCUMGR_SERIAL_MAX_FRAME - 2];
 	size_t dst_len;
 	int rc;
 
 	rc = base64_encode(b64, sizeof(b64), &dst_len, data, len);
 	__ASSERT_NO_MSG(rc == 0);
-	__ASSERT_NO_MSG(dst_len == 4);
 
-	return cb(b64, 4);
+	return cb(b64, dst_len);
 }
 
 /**
@@ -258,6 +258,7 @@ int mcumgr_serial_tx_pkt(const uint8_t *data, int len, mcumgr_serial_tx_cb cb)
 	int rc = 0;
 	int to_process;
 	int reminder;
+	int complete;
 
 	/*
 	 * This is max input bytes that can be taken to the frame before encoding with Base64;
@@ -291,7 +292,7 @@ int mcumgr_serial_tx_pkt(const uint8_t *data, int len, mcumgr_serial_tx_cb cb)
 			memcpy(raw, &u16, sizeof(u16));
 			raw[2] = data[0];
 
-			rc = mcumgr_serial_tx_small(raw, 3, cb);
+			rc = mcumgr_serial_tx_chunk(raw, 3, cb);
 			if (rc != 0) {
 				return rc;
 			}
@@ -322,21 +323,14 @@ int mcumgr_serial_tx_pkt(const uint8_t *data, int len, mcumgr_serial_tx_cb cb)
 			last = true;
 		}
 
-		/*
-		 * Try to process input buffer by chunks of three bytes that will be output as
-		 * four byte chunks, due to Base64 encoding; the number of chunks that can be
-		 * processed is calculated from number of three byte, complete, chunks in input
-		 * buffer, but can not be greater than the number of four byte, complete, chunks
-		 * that the frame can accept.
-		 */
-		while (to_process >= 3) {
-			memcpy(raw, data + src_off, 3);
-			rc = mcumgr_serial_tx_small(raw, 3, cb);
+		/* Encode all complete triples that fit in this frame in one callback. */
+		complete = (to_process / 3) * 3;
+		if (complete != 0) {
+			rc = mcumgr_serial_tx_chunk(data + src_off, complete, cb);
 			if (rc != 0) {
 				return rc;
 			}
-			src_off += 3;
-			to_process -= 3;
+			src_off += complete;
 		}
 
 		if (last) {
@@ -348,7 +342,7 @@ int mcumgr_serial_tx_pkt(const uint8_t *data, int len, mcumgr_serial_tx_cb cb)
 			case 0:
 				raw[0] = (crc & 0xff00) >> 8;
 				raw[1] = crc & 0x00ff;
-				rc = mcumgr_serial_tx_small(raw, 2, cb);
+				rc = mcumgr_serial_tx_chunk(raw, 2, cb);
 				break;
 
 			case 1:
@@ -356,7 +350,7 @@ int mcumgr_serial_tx_pkt(const uint8_t *data, int len, mcumgr_serial_tx_cb cb)
 
 				raw[1] = (crc & 0xff00) >> 8;
 				raw[2] = crc & 0x00ff;
-				rc = mcumgr_serial_tx_small(raw, 3, cb);
+				rc = mcumgr_serial_tx_chunk(raw, 3, cb);
 				break;
 
 			case 2:
@@ -364,13 +358,13 @@ int mcumgr_serial_tx_pkt(const uint8_t *data, int len, mcumgr_serial_tx_cb cb)
 				raw[1] = data[src_off++];
 
 				raw[2] = (crc & 0xff00) >> 8;
-				rc = mcumgr_serial_tx_small(raw, 3, cb);
+				rc = mcumgr_serial_tx_chunk(raw, 3, cb);
 				if (rc != 0) {
 					return rc;
 				}
 
 				raw[0] = crc & 0x00ff;
-				rc = mcumgr_serial_tx_small(raw, 1, cb);
+				rc = mcumgr_serial_tx_chunk(raw, 1, cb);
 				break;
 			}
 

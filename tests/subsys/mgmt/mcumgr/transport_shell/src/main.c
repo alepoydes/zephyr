@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <errno.h>
 #include <zephyr/mgmt/mcumgr/smp/smp.h>
 #include <zephyr/mgmt/mcumgr/transport/smp_shell.h>
 #include <zephyr/ztest.h>
@@ -77,6 +78,39 @@ static int collect(const void *bytes, int length)
 	memcpy(encoded + encoded_length, bytes, length);
 	encoded_length += length;
 	return 0;
+}
+
+static int reject_after_prefix(const void *bytes, int length)
+{
+	if (encoded_length == 6) {
+		return -EIO;
+	}
+
+	return collect(bytes, length);
+}
+
+ZTEST(smp_shell, test_multiframe_serial_encoding)
+{
+	/* Payload bytes 0..92; CRC-16/ITU-T is 0x8206. */
+	static const char expected[] =
+		"\x06\x09" "AF8AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8w"
+		"MTIzNDU2Nzg5Ojs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFla\n"
+		"\x04\x14" "W1yCBg==\n";
+	uint8_t payload[93];
+
+	for (size_t i = 0; i < sizeof(payload); i++) {
+		payload[i] = i;
+	}
+
+	encoded_length = 0;
+	zassert_ok(mcumgr_serial_tx_pkt(payload, sizeof(payload), collect));
+	zassert_equal(encoded_length, sizeof(expected) - 1);
+	zassert_mem_equal(encoded, expected, sizeof(expected) - 1);
+
+	encoded_length = 0;
+	zassert_equal(mcumgr_serial_tx_pkt(payload, sizeof(payload), reject_after_prefix), -EIO);
+	zassert_equal(encoded_length, 6, "Transmission continued after callback error");
+	zassert_mem_equal(encoded, expected, encoded_length);
 }
 
 ZTEST(smp_shell, test_partial_packet_reset)
