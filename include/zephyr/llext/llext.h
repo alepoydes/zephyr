@@ -110,6 +110,7 @@ struct llext_alloc_map {
 struct llext {
 	/** @cond ignore */
 	sys_snode_t llext_list;
+	struct k_heap *heap;
 
 #ifdef CONFIG_USERSPACE
 	struct k_mem_partition mem_parts[LLEXT_MEM_PARTITIONS];
@@ -209,6 +210,18 @@ struct llext_load_param {
 	 *       before the extension can be unloaded via @ref llext_unload.
 	 */
 	bool keep_section_info;
+
+	/**
+	 * Optional initialized heap for this extension's metadata and regions.
+	 * NULL uses the configured LLEXT heaps. The caller must keep this heap
+	 * and its backing memory alive until the extension is unloaded; failed
+	 * loads release their allocations before returning. Loading an already
+	 * registered name retains that extension and its original heap.
+	 *
+	 * Not supported with CONFIG_HARVARD, CONFIG_LLEXT_HEAP_MEMBLK, or the
+	 * experimental save/restore API.
+	 */
+	struct k_heap *heap;
 };
 
 /** Default initializer for @ref llext_load_param */
@@ -489,6 +502,7 @@ int llext_heap_uninit(void);
  * @param[in] n_ext Number of extensions
  * @retval 0 Success
  * @retval -ENOENT Some dependencies not found
+ * @retval -ENOTSUP Extension uses a caller-owned heap
  */
 int llext_relink_dependency(struct llext *ext, unsigned int n_ext);
 
@@ -516,6 +530,7 @@ int llext_relink_dependency(struct llext *ext, unsigned int n_ext);
  * @retval -ENOMEM No memory
  * @retval -EINVAL Stored dependency out of range
  * @retval -EFAULT Internal algorithmic error
+ * @retval -ENOTSUP Extension uses a caller-owned heap
  */
 int llext_restore(struct llext **ext, struct llext_loader **ldr, unsigned int n_ext);
 /**

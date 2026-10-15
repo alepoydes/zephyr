@@ -107,7 +107,7 @@ static int llext_load_elf_data(struct llext_loader *ldr, struct llext *ext)
 
 	size_t sect_map_sz = ext->sect_cnt * sizeof(ldr->sect_map[0]);
 
-	ldr->sect_map = llext_alloc_metadata(sect_map_sz);
+	ldr->sect_map = llext_alloc_metadata(ext->heap, sect_map_sz);
 	if (!ldr->sect_map) {
 		LOG_ERR("Failed to allocate section map, size %zu", sect_map_sz);
 		return -ENOMEM;
@@ -125,7 +125,7 @@ static int llext_load_elf_data(struct llext_loader *ldr, struct llext *ext)
 		size_t sect_hdrs_sz = ext->sect_cnt * sizeof(ext->sect_hdrs[0]);
 
 		ext->sect_hdrs_on_heap = true;
-		ext->sect_hdrs = llext_alloc_metadata(sect_hdrs_sz);
+		ext->sect_hdrs = llext_alloc_metadata(ext->heap, sect_hdrs_sz);
 		if (!ext->sect_hdrs) {
 			LOG_ERR("Failed to allocate section headers, size %zu", sect_hdrs_sz);
 			return -ENOMEM;
@@ -630,7 +630,7 @@ static int llext_allocate_symtab(struct llext_loader *ldr, struct llext *ext)
 	struct llext_symtable *sym_tab = &ext->sym_tab;
 	size_t syms_size = sym_tab->sym_cnt * sizeof(struct llext_symbol);
 
-	sym_tab->syms = llext_alloc_metadata(syms_size);
+	sym_tab->syms = llext_alloc_metadata(ext->heap, syms_size);
 	if (!sym_tab->syms) {
 		return -ENOMEM;
 	}
@@ -663,7 +663,7 @@ static int llext_export_symbols(struct llext_loader *ldr, struct llext *ext,
 		return 0;
 	}
 
-	exp_tab->syms = llext_alloc_metadata(exp_tab->sym_cnt * sizeof(struct llext_symbol));
+	exp_tab->syms = llext_alloc_metadata(ext->heap, exp_tab->sym_cnt * sizeof(struct llext_symbol));
 	if (!exp_tab->syms) {
 		return -ENOMEM;
 	}
@@ -803,6 +803,7 @@ int do_llext_load(struct llext_loader *ldr, struct llext *ext,
 	 * (see the NOTICE at the top of this file).
 	 */
 	memset(ext, 0, sizeof(*ext));
+	ext->heap = ldr_parm->heap;
 	ldr->sect_map = NULL;
 
 	LOG_DBG("Loading ELF data...");
@@ -901,7 +902,7 @@ out:
 	 * is enabled and no error is detected.
 	 */
 	if (!(IS_ENABLED(CONFIG_LLEXT_LOG_LEVEL_DBG) && ret == 0)) {
-		llext_free_metadata(ext->sym_tab.syms);
+		llext_free_metadata(ext->heap, ext->sym_tab.syms);
 		ext->sym_tab.sym_cnt = 0;
 		ext->sym_tab.syms = NULL;
 	}
@@ -915,11 +916,11 @@ out:
 		 */
 		llext_free_regions(ext);
 		if (ext->sect_hdrs_on_heap) {
-			llext_free_metadata(ext->sect_hdrs);
+			llext_free_metadata(ext->heap, ext->sect_hdrs);
 			ext->sect_hdrs = NULL;
 			ext->sect_hdrs_on_heap = false;
 		}
-		llext_free_metadata(ext->exp_tab.syms);
+		llext_free_metadata(ext->heap, ext->exp_tab.syms);
 		ext->exp_tab.sym_cnt = 0;
 		ext->exp_tab.syms = NULL;
 	} else {
@@ -936,7 +937,7 @@ int llext_free_inspection_data(struct llext_loader *ldr, struct llext *ext)
 {
 	if (ldr->sect_map) {
 		ext->alloc_size -= ext->sect_cnt * sizeof(ldr->sect_map[0]);
-		llext_free_metadata(ldr->sect_map);
+		llext_free_metadata(ext->heap, ldr->sect_map);
 		ldr->sect_map = NULL;
 	}
 

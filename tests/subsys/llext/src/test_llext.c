@@ -273,6 +273,130 @@ LLEXT_LOAD_UNLOAD(hello_world,
 	.kernel_only = true
 )
 
+#if defined(CONFIG_LLEXT_HEAP_DYNAMIC) && !defined(CONFIG_HARVARD) && \
+	!defined(CONFIG_LLEXT_HEAP_MEMBLK)
+#define PER_LOAD_HEAP_SIZE KB(24)
+static uint8_t per_load_first_mem[PER_LOAD_HEAP_SIZE] __aligned(4096);
+static uint8_t per_load_second_mem[PER_LOAD_HEAP_SIZE] __aligned(4096);
+
+/* Measure the whole allocatable region without requiring optional heap stats. */
+static size_t largest_heap_request(struct k_heap *heap)
+{
+	size_t low = 0, high = PER_LOAD_HEAP_SIZE + 1;
+
+	while (low + 1 < high) {
+		size_t middle = low + (high - low) / 2;
+		void *block = k_heap_alloc(heap, middle, K_NO_WAIT);
+
+		if (block) {
+			low = middle;
+			k_heap_free(heap, block);
+		} else {
+			high = middle;
+		}
+	}
+	return low;
+}
+
+static void assert_extension_in_heap(const struct llext *ext, const uint8_t *backing)
+{
+	uintptr_t start = (uintptr_t)backing;
+	uintptr_t end = start + PER_LOAD_HEAP_SIZE;
+
+	zassert_true((uintptr_t)ext >= start && (uintptr_t)ext < end,
+		     "extension metadata outside its heap");
+	if (ext->sect_hdrs_on_heap) {
+		zassert_true((uintptr_t)ext->sect_hdrs >= start &&
+			     (uintptr_t)ext->sect_hdrs < end,
+			     "section headers outside their heap");
+	}
+	if (ext->sym_tab.syms) {
+		zassert_true((uintptr_t)ext->sym_tab.syms >= start &&
+			     (uintptr_t)ext->sym_tab.syms < end,
+			     "symbol table outside its heap");
+	}
+	if (ext->exp_tab.syms) {
+		zassert_true((uintptr_t)ext->exp_tab.syms >= start &&
+			     (uintptr_t)ext->exp_tab.syms < end,
+			     "exports outside their heap");
+	}
+	for (int i = 0; i < LLEXT_MEM_COUNT; i++) {
+		if (ext->mem_on_heap[i]) {
+			zassert_true((uintptr_t)ext->mem[i] >= start &&
+				     (uintptr_t)ext->mem[i] < end,
+				     "region %d outside its heap", i);
+		}
+	}
+}
+
+static int per_load_read_failure(struct llext_loader *ldr, void *buf, size_t len)
+{
+	struct llext_buf_loader *source = CONTAINER_OF(ldr, struct llext_buf_loader, loader);
+
+	if (source->pos) {
+		return -EIO;
+	}
+	return llext_buf_read(ldr, buf, len);
+}
+
+ZTEST(llext, test_independent_load_heaps)
+{
+	struct k_heap first_heap, second_heap;
+	struct llext_load_param first_param = LLEXT_LOAD_PARAM_DEFAULT;
+	struct llext_load_param second_param = LLEXT_LOAD_PARAM_DEFAULT;
+	struct llext *first = NULL, *second = NULL, *failed = NULL;
+	struct llext_buf_loader first_loader =
+		LLEXT_TEMPORARY_BUF_LOADER(hello_world_ext, sizeof(hello_world_ext));
+	struct llext_buf_loader second_loader =
+		LLEXT_TEMPORARY_BUF_LOADER(hello_world_ext, sizeof(hello_world_ext));
+	struct llext_buf_loader failed_loader =
+		LLEXT_TEMPORARY_BUF_LOADER(hello_world_ext, sizeof(hello_world_ext));
+
+	k_heap_init(&first_heap, per_load_first_mem, sizeof(per_load_first_mem));
+	k_heap_init(&second_heap, per_load_second_mem, sizeof(per_load_second_mem));
+	first_param.heap = &first_heap;
+	second_param.heap = &second_heap;
+	size_t first_capacity = largest_heap_request(&first_heap);
+	size_t second_capacity = largest_heap_request(&second_heap);
+
+	zassert_true(first_capacity && second_capacity, "caller heaps must be usable");
+	zassert_ok(llext_load(&first_loader.loader, "perheap_first", &first, &first_param));
+	assert_extension_in_heap(first, per_load_first_mem);
+	size_t first_live = largest_heap_request(&first_heap);
+
+	zassert_true(first_live < first_capacity, "first extension must use its heap");
+	zassert_equal(largest_heap_request(&second_heap), second_capacity,
+		      "first load changed the independent second heap");
+
+	failed_loader.loader.peek = NULL;
+	failed_loader.loader.read = per_load_read_failure;
+	zassert_equal(llext_load(&failed_loader.loader, "perheap_fail", &failed,
+				 &second_param), -EIO,
+		      "second heap load must reach the injected read failure");
+	zassert_is_null(failed);
+	zassert_equal(largest_heap_request(&first_heap), first_live,
+		      "failed load changed the live first heap");
+	zassert_equal(largest_heap_request(&second_heap), second_capacity,
+		      "failed load leaked from the second heap");
+
+	zassert_ok(llext_load(&second_loader.loader, "perheap_second", &second, &second_param));
+	assert_extension_in_heap(second, per_load_second_mem);
+	size_t second_live = largest_heap_request(&second_heap);
+
+	zassert_true(second_live < second_capacity, "second extension must use its heap");
+	zassert_equal(largest_heap_request(&first_heap), first_live,
+		      "second load changed the live first heap");
+	zassert_ok(llext_unload(&first));
+	zassert_equal(largest_heap_request(&first_heap), first_capacity,
+		      "first heap was not restored while second extension remains live");
+	zassert_equal(largest_heap_request(&second_heap), second_live,
+		      "first unload changed the live second heap");
+	zassert_ok(llext_unload(&second));
+	zassert_equal(largest_heap_request(&second_heap), second_capacity,
+		      "second heap was not restored after unload");
+}
+#endif
+
 /* When compiled with CCAC, init_fini's sections are unfixably out of order */
 #if !defined(CONFIG_LLEXT_TYPE_ELF_SHAREDLIB) && !defined(__CCAC__)
 static LLEXT_CONST uint8_t init_fini_ext[] LLEXT_SECT ELF_ALIGN = {

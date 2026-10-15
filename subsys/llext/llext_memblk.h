@@ -31,8 +31,9 @@ static inline bool llext_heap_is_inited(void)
 	return true;
 }
 
-static inline void *llext_alloc_metadata(size_t bytes)
+static inline void *llext_alloc_metadata(struct k_heap *heap, size_t bytes)
 {
+	ARG_UNUSED(heap);
 	if (bytes != 0 && llext_heap_is_inited()) {
 		return k_heap_alloc(&llext_metadata_heap, bytes, K_NO_WAIT);
 	}
@@ -58,8 +59,9 @@ static inline void *llext_aligned_alloc_instr(struct llext *ext, size_t align, s
 	return NULL;
 }
 
-static inline void llext_free_metadata(void *ptr)
+static inline void llext_free_metadata(struct k_heap *heap, void *ptr)
 {
+	ARG_UNUSED(heap);
 	if (llext_heap_is_inited()) {
 		k_heap_free(&llext_metadata_heap, ptr);
 	}

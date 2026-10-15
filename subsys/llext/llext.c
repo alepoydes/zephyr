@@ -178,6 +178,7 @@ const void *llext_find_sym(const struct llext_symtable *sym_table, const char *s
 int llext_load(struct llext_loader *ldr, const char *name, struct llext **ext,
 	       const struct llext_load_param *ldr_parm)
 {
+	struct k_heap *heap = ldr_parm ? ldr_parm->heap : NULL;
 	int ret;
 
 	*ext = llext_by_name(name);
@@ -190,7 +191,12 @@ int llext_load(struct llext_loader *ldr, const char *name, struct llext **ext,
 		goto out;
 	}
 
-	*ext = llext_alloc_metadata(sizeof(struct llext));
+	if (heap && (IS_ENABLED(CONFIG_HARVARD) || IS_ENABLED(CONFIG_LLEXT_HEAP_MEMBLK))) {
+		ret = -ENOTSUP;
+		goto out;
+	}
+
+	*ext = llext_alloc_metadata(heap, sizeof(struct llext));
 	if (*ext == NULL) {
 		LOG_ERR("Not enough memory for extension metadata");
 		ret = -ENOMEM;
@@ -199,7 +205,7 @@ int llext_load(struct llext_loader *ldr, const char *name, struct llext **ext,
 
 	ret = do_llext_load(ldr, *ext, ldr_parm);
 	if (ret < 0) {
-		llext_free_metadata(*ext);
+		llext_free_metadata(heap, *ext);
 		*ext = NULL;
 		goto out;
 	}
@@ -249,13 +255,13 @@ int llext_unload(struct llext **ext)
 	k_mutex_unlock(&llext_lock);
 
 	if (tmp->sect_hdrs_on_heap) {
-		llext_free_metadata(tmp->sect_hdrs);
+		llext_free_metadata(tmp->heap, tmp->sect_hdrs);
 	}
 
 	llext_free_regions(tmp);
-	llext_free_metadata(tmp->sym_tab.syms);
-	llext_free_metadata(tmp->exp_tab.syms);
-	llext_free_metadata(tmp);
+	llext_free_metadata(tmp->heap, tmp->sym_tab.syms);
+	llext_free_metadata(tmp->heap, tmp->exp_tab.syms);
+	llext_free_metadata(tmp->heap, tmp);
 
 	return 0;
 }
