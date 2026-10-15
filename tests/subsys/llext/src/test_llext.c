@@ -527,6 +527,90 @@ static LLEXT_CONST uint8_t inspect_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "inspect.inc"
 };
 
+#if defined(CONFIG_ARM_MPU) && defined(CONFIG_USERSPACE) && \
+	defined(CONFIG_MPU_REQUIRES_POWER_OF_TWO_ALIGNMENT) && \
+	!defined(CONFIG_LLEXT_HEAP_MEMBLK)
+#define TAIL_HEAP_SIZE KB(24)
+static uint8_t tail_heap_mem[TAIL_HEAP_SIZE] __aligned(4096);
+
+ZTEST(llext, test_mpu_region_tails_are_zero)
+{
+	struct k_heap heap;
+	struct llext_load_param parameters = LLEXT_LOAD_PARAM_DEFAULT;
+	struct llext_buf_loader loader =
+		LLEXT_TEMPORARY_BUF_LOADER(inspect_ext, sizeof(inspect_ext));
+	struct llext *ext = NULL;
+	size_t low = 0, high = TAIL_HEAP_SIZE + 1;
+	size_t checked_tails = 0;
+	size_t checked_dirty_tails = 0;
+	uintptr_t dirty_start, dirty_end;
+	void *dirty;
+	const int *bss, *data, *rodata;
+
+	k_heap_init(&heap, tail_heap_mem, sizeof(tail_heap_mem));
+	/* Fill the allocatable payload, then return it to the allocator. The
+	 * extension must not expose bytes retained from this prior owner. */
+	while (low + 1 < high) {
+		size_t middle = low + (high - low) / 2;
+		void *block = k_heap_alloc(&heap, middle, K_NO_WAIT);
+
+		if (block) {
+			low = middle;
+			k_heap_free(&heap, block);
+		} else {
+			high = middle;
+		}
+	}
+	zassert_true(low > 0, "test heap has no allocatable payload");
+	dirty = k_heap_alloc(&heap, low, K_NO_WAIT);
+
+	zassert_not_null(dirty);
+	dirty_start = (uintptr_t)dirty;
+	dirty_end = dirty_start + low;
+	memset(dirty, 0xa5, low);
+	k_heap_free(&heap, dirty);
+	dirty = k_heap_aligned_alloc(&heap, 32, 32, K_NO_WAIT);
+	zassert_not_null(dirty);
+	zassert_equal(((uint8_t *)dirty)[24], 0xa5, "reused payload was not dirty");
+	k_heap_free(&heap, dirty);
+
+	parameters.heap = &heap;
+	zassert_ok(llext_load(&loader.loader, "dirty_mpu_tails", &ext, &parameters));
+	bss = llext_find_sym(&ext->exp_tab, "number_in_bss");
+	data = llext_find_sym(&ext->exp_tab, "number_in_data");
+	rodata = llext_find_sym(&ext->exp_tab, "number_in_rodata");
+
+	zassert_not_null(bss);
+	zassert_not_null(data);
+	zassert_not_null(rodata);
+	zassert_equal(*bss, 0);
+	zassert_equal(*data, 1);
+	zassert_equal(*rodata, 2);
+	for (int i = 0; i < LLEXT_MEM_PARTITIONS; i++) {
+		if (ext->mem_size[i] == 0) {
+			continue;
+		}
+		zassert_true(ext->mem_on_heap[i], "region %d did not use the dirty heap", i);
+		zassert_true(ext->mem_parts[i].size >= ext->mem_size[i],
+			     "region %d mapped less than its ELF contents", i);
+		const uint8_t *region = ext->mem[i];
+
+		for (size_t offset = ext->mem_size[i]; offset < ext->mem_parts[i].size; offset++) {
+			zassert_equal(region[offset], 0, "region %d tail byte %zu is not zero",
+				      i, offset);
+			checked_tails++;
+			if ((uintptr_t)&region[offset] >= dirty_start &&
+			    (uintptr_t)&region[offset] < dirty_end) {
+				checked_dirty_tails++;
+			}
+		}
+	}
+	zassert_true(checked_tails > 0, "fixture has no MPU-rounded tail");
+	zassert_true(checked_dirty_tails > 0, "no mapped tail reused dirty payload");
+	zassert_ok(llext_unload(&ext));
+}
+#endif
+
 #if defined(CONFIG_LLEXT_RODATA_NO_RELOC)
 static LLEXT_CONST uint8_t rodata_no_reloc_ext[] ELF_ALIGN = {
 	#include "rodata_no_reloc.inc"

@@ -180,7 +180,7 @@ static int llext_copy_region(struct llext_loader *ldr, struct llext *ext,
 		region_alloc);
 
 	if (region->sh_type == SHT_NOBITS) {
-		memset(ext->mem[mem_idx], 0, region->sh_size);
+		memset(ext->mem[mem_idx], 0, region_alloc);
 	} else {
 		uintptr_t base = (uintptr_t)ext->mem[mem_idx];
 		size_t offset = region->sh_offset;
@@ -206,6 +206,11 @@ static int llext_copy_region(struct llext_loader *ldr, struct llext *ext,
 		if (ret != 0) {
 			goto err;
 		}
+		/* Mapping exposes the rounded region, including its tail. Do not
+		 * reveal contents left by a previous heap owner to the extension.
+		 */
+		memset((uint8_t *)ext->mem[mem_idx] + region->sh_size, 0,
+		       region_alloc - region->sh_size);
 	}
 
 	ext->mem_on_heap[mem_idx] = true;
